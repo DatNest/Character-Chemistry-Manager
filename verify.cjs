@@ -91,11 +91,24 @@ assert.equal(vm.runInContext(`uniqueImportedName('Alex')`, context), 'Alex (им
 assert.equal(vm.runInContext(`safeFilePart('A/B:*?')`, context), 'A-B-');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
-assert.equal(manifest.version, '2.1.0');
+assert.equal(manifest.version, '2.2.0');
 assert.equal(manifest.auto_update, false);
 
 assert.match(source, /character-chemistry-profile/);
 assert.match(source, /function exportProfile/);
 assert.match(source, /async function importProfile/);
+assert.match(source, /new Popup\(/);
+assert.match(source, /drawer-content openDrawer/);
+assert.match(source, /class="menu_button/);
+assert.match(source, /class="text_pole/);
+assert.match(source, /settingsSectionWrap/);
+assert.match(source, /checkbox_label/);
+assert.doesNotMatch(source, /ccm-prompt-card/);
+assert.doesNotMatch(source, /data-action="add-starter"/);
+
+const styleSource = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+for (const property of ['color', 'background', 'border', 'border-radius', 'box-shadow', 'font', 'font-family', 'font-size', 'opacity', 'filter', 'backdrop-filter']) {
+    assert.doesNotMatch(styleSource, new RegExp(`(^|[;{]\\s*)${property}\\s*:`, 'm'), `style.css must not define ${property}`);
+}
 
 console.log('Character Chemistry verification: OK');

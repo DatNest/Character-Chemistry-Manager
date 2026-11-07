@@ -1,5 +1,6 @@
 import { setExtensionPrompt, extension_prompt_types, eventSource, event_types } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
+import { Popup, POPUP_TYPE } from '../../../popup.js';
 
 const EXTENSION_KEY = 'character_chemistry_manager';
 const PROMPT_ID = 'character-chemistry-manager';
@@ -300,18 +301,17 @@ function activeAssignmentCount() {
 
 function shellHtml() {
     return `
-        <div id="ccm-panel" class="ccm-panel ccm-hidden" role="dialog" aria-label="Character Chemistry">
+        <div id="ccm-panel" class="ccm-panel drawer-content openDrawer ccm-hidden" role="dialog" aria-label="Character Chemistry">
             <header class="ccm-header">
-                <div class="ccm-brand"><i class="fa-solid fa-fire-flame-curved"></i><span>Character Chemistry</span><b id="ccm-count"></b></div>
-                <button class="ccm-icon-btn" data-action="close" aria-label="Закрыть"><i class="fa-solid fa-xmark"></i></button>
+                <h3 class="ccm-brand"><i class="fa-solid fa-fire-flame-curved"></i><span>Character Chemistry</span><small id="ccm-count"></small></h3>
+                <button class="menu_button fa-fw" data-action="close" aria-label="Закрыть" title="Закрыть"><i class="fa-solid fa-xmark"></i></button>
             </header>
             <nav class="ccm-nav" aria-label="Разделы">
-                <button data-view="chat">Чат</button><button data-view="presets">Персонажи</button><button data-view="constructor">Конструктор</button>
+                <button class="menu_button" data-view="chat">Чат</button><button class="menu_button" data-view="presets">Персонажи</button><button class="menu_button" data-view="constructor">Конструктор</button>
             </nav>
             <main id="ccm-content" class="ccm-content"></main>
-            <footer class="ccm-footer"><span id="ccm-sync"><i class="fa-solid fa-cloud"></i> Сохраняется в SillyTavern</span></footer>
         </div>
-        <button id="ccm-mini" class="ccm-mini" aria-label="Открыть Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><b></b></button>`;
+        <button id="ccm-mini" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small></small></button>`;
 }
 
 function settingsHtml() {
@@ -319,13 +319,13 @@ function settingsHtml() {
         <div id="ccm-extension-settings" class="ccm-extension-settings"><div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header"><b><i class="fa-solid fa-fire-flame-curved"></i> Character Chemistry</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
             <div class="inline-drawer-content"><div class="ccm-settings-body">
-                <label class="ccm-check"><input id="ccm-master-enabled" type="checkbox"><span>Включить инъекции промптов</span></label>
-                <label class="ccm-check"><input id="ccm-show-floating" type="checkbox"><span>Показывать плавающую кнопку</span></label>
-                <p>Пресеты хранятся в настройках SillyTavern, а выбранные персонажи и режимы — в файле текущего чата. Поэтому они доступны с телефона и ноутбука при входе в один профиль.</p>
+                <label class="checkbox_label"><input id="ccm-master-enabled" type="checkbox"><span>Включить инъекции промптов</span></label>
+                <label class="checkbox_label"><input id="ccm-show-floating" type="checkbox"><span>Показывать плавающую кнопку</span></label>
+                <small>Пресеты хранятся в настройках SillyTavern, а выбранные персонажи и режимы — в файле текущего чата.</small>
                 <div class="ccm-settings-actions">
-                    <button class="menu_button" data-action="open"><i class="fa-solid fa-sliders"></i> Открыть</button>
-                    <button class="menu_button" data-action="export"><i class="fa-solid fa-file-export"></i> Экспорт</button>
-                    <button class="menu_button" data-action="import"><i class="fa-solid fa-file-import"></i> Импорт</button>
+                    <button class="menu_button menu_button_icon" data-action="open"><i class="fa-solid fa-sliders"></i><span>Открыть</span></button>
+                    <button class="menu_button menu_button_icon" data-action="export"><i class="fa-solid fa-file-export"></i><span>Экспорт</span></button>
+                    <button class="menu_button menu_button_icon" data-action="import"><i class="fa-solid fa-file-import"></i><span>Импорт</span></button>
                     <input id="ccm-import-file" type="file" accept="application/json,.json" hidden>
                 </div>
             </div></div>
@@ -333,13 +333,13 @@ function settingsHtml() {
 }
 
 function emptyHtml(title, text) {
-    return `<div class="ccm-empty"><i class="fa-regular fa-face-smile"></i><strong>${escapeHtml(title)}</strong><span>${escapeHtml(text)}</span></div>`;
+    return `<p class="ccm-empty"><strong>${escapeHtml(title)}</strong><br><small>${escapeHtml(text)}</small></p>`;
 }
 
 function modeSwitchHtml(assignment) {
     return `<div class="ccm-mode-switch" role="group" aria-label="Режим персонажа">
-        <button data-action="set-mode" data-character-id="${escapeHtml(assignment.characterId)}" data-mode="off" class="${assignment.mode === 'off' ? 'is-on' : ''}" title="Выключить">×</button>
-        ${MODES.map(mode => `<button data-action="set-mode" data-character-id="${escapeHtml(assignment.characterId)}" data-mode="${mode}" class="${assignment.mode === mode ? 'is-on' : ''}">${MODE_LABELS[mode]}</button>`).join('')}
+        <button class="menu_button ${assignment.mode === 'off' ? 'active' : ''}" data-action="set-mode" data-character-id="${escapeHtml(assignment.characterId)}" data-mode="off" title="Выключить">×</button>
+        ${MODES.map(mode => `<button class="menu_button ${assignment.mode === mode ? 'active' : ''}" data-action="set-mode" data-character-id="${escapeHtml(assignment.characterId)}" data-mode="${mode}">${MODE_LABELS[mode]}</button>`).join('')}
     </div>`;
 }
 
@@ -352,39 +352,40 @@ function renderChatView() {
     const cards = assignments.map(assignment => {
         const character = findCharacter(assignment.characterId);
         const count = MODES.includes(assignment.mode) ? promptCount(character, assignment.mode) : 0;
-        return `<article class="ccm-chat-card">
+        return `<article class="ccm-chat-card settingsSectionWrap">
             <div class="ccm-character-line"><strong title="${escapeHtml(character.name)}">${escapeHtml(character.name)}</strong>${modeSwitchHtml(assignment)}</div>
-            <div class="ccm-card-foot"><span>${assignment.mode === 'off' ? 'Сейчас выключен' : `${count} промпт(ов) в ${MODE_LABELS[assignment.mode]}`}</span><button class="ccm-link-btn" data-action="detach" data-character-id="${escapeHtml(character.id)}"><i class="fa-solid fa-link-slash"></i> Открепить</button></div>
+            <div class="ccm-card-foot"><small>${assignment.mode === 'off' ? 'Сейчас выключен' : `${count} промпт(ов) в ${MODE_LABELS[assignment.mode]}`}</small><button class="menu_button fa-fw" data-action="detach" data-character-id="${escapeHtml(character.id)}" aria-label="Открепить" title="Открепить"><i class="fa-solid fa-link-slash"></i></button></div>
         </article>`;
     }).join('');
     const picker = available.length
-        ? `<div class="ccm-add-row"><select id="ccm-attach-select">${available.map(character => `<option value="${escapeHtml(character.id)}">${escapeHtml(character.name)}</option>`).join('')}</select><button class="ccm-primary" data-action="attach"><i class="fa-solid fa-plus"></i> Добавить</button></div>`
-        : settings.characters.length ? '<p class="ccm-muted">Все созданные персонажи уже прикреплены.</p>' : '<button class="ccm-primary ccm-wide" data-view="presets"><i class="fa-solid fa-plus"></i> Создать первого персонажа</button>';
-    return `<section class="ccm-section-head"><div><span class="ccm-kicker">Этот чат</span><h2>${escapeHtml(currentChatName())}</h2></div></section>
-        <p class="ccm-help">Можно прикрепить несколько персонажей. Режим напротив имени действует только в этом чате.</p>
+        ? `<div class="ccm-add-row"><select class="text_pole" id="ccm-attach-select">${available.map(character => `<option value="${escapeHtml(character.id)}">${escapeHtml(character.name)}</option>`).join('')}</select><button class="menu_button menu_button_icon" data-action="attach"><i class="fa-solid fa-plus"></i><span>Добавить</span></button></div>`
+        : settings.characters.length ? '<small>Все созданные персонажи уже прикреплены.</small>' : '<button class="menu_button ccm-wide" data-view="presets"><i class="fa-solid fa-plus"></i> Создать первого персонажа</button>';
+    return `<section class="ccm-section-head"><div><small>Этот чат</small><h3>${escapeHtml(currentChatName())}</h3></div></section>
+        <small class="ccm-help">Можно прикрепить несколько персонажей. Режим напротив имени действует только в этом чате.</small>
         <div class="ccm-stack">${cards || emptyHtml('Пока никого', 'Добавь пресет ниже, затем выбери Flirt, Spicy или Sex.')}</div>
-        <section class="ccm-subsection"><h3>Добавить персонажа</h3>${picker}</section>`;
+        <section class="ccm-subsection"><h4>Добавить персонажа</h4>${picker}</section>`;
 }
 
 function renderPresetList() {
-    const rows = settings.characters.map(character => `<article class="ccm-preset-row">
+    const rows = settings.characters.map(character => `<button class="menu_button ccm-preset-row" data-action="edit-character" data-character-id="${escapeHtml(character.id)}">
         <div><strong>${escapeHtml(character.name)}</strong><span>${MODES.map(mode => `${MODE_LABELS[mode]} ${promptCount(character, mode)}`).join(' · ')}</span></div>
-        <button class="ccm-icon-btn" data-action="edit-character" data-character-id="${escapeHtml(character.id)}" aria-label="Редактировать"><i class="fa-solid fa-pen"></i></button>
-    </article>`).join('');
-    return `<section class="ccm-section-head"><div><span class="ccm-kicker">Общая библиотека</span><h2>Персонажи</h2></div><div class="ccm-head-actions"><button class="ccm-secondary" data-action="import-profile"><i class="fa-solid fa-file-import"></i> Импорт профиля</button><button class="ccm-primary" data-action="add-character"><i class="fa-solid fa-plus"></i> Создать</button><input id="ccm-profile-import-file" type="file" accept="application/json,.json" hidden></div></section>
-        <p class="ccm-help">У каждого пресета три независимых набора. Изменение здесь применяется во всех чатах, где этот персонаж прикреплён.</p>
+        <i class="fa-solid fa-chevron-right"></i>
+    </button>`).join('');
+    return `<section class="ccm-section-head"><div><small>Общая библиотека</small><h3>Персонажи</h3></div><div class="ccm-head-actions"><button class="menu_button fa-fw" data-action="import-profile" aria-label="Импорт профиля" title="Импорт профиля"><i class="fa-solid fa-file-import"></i></button><button class="menu_button menu_button_icon" data-action="add-character"><i class="fa-solid fa-plus"></i><span>Создать</span></button><input id="ccm-profile-import-file" type="file" accept="application/json,.json" hidden></div></section>
+        <small class="ccm-help">Изменение пресета применяется во всех чатах, где этот персонаж прикреплён.</small>
         <div class="ccm-stack">${rows || emptyHtml('Библиотека пуста', 'Создай персонажа и заполни хотя бы один режим.')}</div>`;
 }
 
-function promptEditorHtml(prompt, scope) {
-    return `<article class="ccm-prompt-card" data-prompt-id="${escapeHtml(prompt.id)}" data-scope="${escapeHtml(scope)}">
-        <div class="ccm-prompt-head"><label class="ccm-check"><input type="checkbox" data-field="enabled" ${prompt.enabled ? 'checked' : ''}><span>Активен</span></label><button class="ccm-icon-btn ccm-danger" data-action="delete-prompt" aria-label="Удалить"><i class="fa-solid fa-trash"></i></button></div>
-        <label class="ccm-field"><span>Короткое название</span><input type="text" data-field="label" maxlength="120" value="${escapeHtml(prompt.label)}"></label>
-        <label class="ccm-field"><span>Что должен учитывать AI</span><textarea data-field="text" rows="4" placeholder="Например: {{char}} флиртует через сухой юмор и долгий зрительный контакт.">${escapeHtml(prompt.text)}</textarea></label>
-        <div class="ccm-ranges">
-            <label class="ccm-field"><span>Сила <b data-value-for="strength">${prompt.strength}</b>/10</span><input type="range" data-field="strength" min="1" max="10" step="1" value="${prompt.strength}"></label>
-            <label class="ccm-field"><span>Частота <b data-value-for="chance">${prompt.chance}</b>%</span><input type="range" data-field="chance" min="0" max="100" step="5" value="${prompt.chance}"></label>
-        </div>
+function promptRowHtml(prompt, scope) {
+    const preview = prompt.text.trim() || 'Нажми, чтобы заполнить промпт';
+    return `<article class="ccm-prompt-row settingsSectionWrap ${prompt.enabled ? '' : 'disabled'}" data-prompt-id="${escapeHtml(prompt.id)}" data-scope="${escapeHtml(scope)}">
+        <label class="checkbox_label ccm-prompt-toggle" title="Включить или выключить"><input type="checkbox" data-field="enabled" aria-label="Активен" ${prompt.enabled ? 'checked' : ''}></label>
+        <button class="menu_button ccm-prompt-open" data-action="edit-prompt">
+            <strong>${escapeHtml(prompt.label || 'Без названия')}</strong>
+            <small>${escapeHtml(preview)}</small>
+            <span>Сила ${prompt.strength}/10 · Частота ${prompt.chance}%</span>
+        </button>
+        <button class="menu_button fa-fw" data-action="delete-prompt" aria-label="Удалить" title="Удалить"><i class="fa-solid fa-trash"></i></button>
     </article>`;
 }
 
@@ -392,15 +393,15 @@ function renderCharacterEditor(character) {
     const mode = MODES.includes(ui.editMode) ? ui.editMode : 'flirt';
     const prompts = character.modes[mode];
     return `<section class="ccm-editor-head">
-        <button class="ccm-icon-btn" data-action="back-presets" aria-label="Назад"><i class="fa-solid fa-arrow-left"></i></button>
-        <label class="ccm-name-field"><span>Имя персонажа</span><input id="ccm-character-name" maxlength="120" value="${escapeHtml(character.name)}"></label>
-        <button class="ccm-icon-btn" data-action="export-profile" data-character-id="${escapeHtml(character.id)}" aria-label="Экспортировать профиль" title="Экспорт профиля"><i class="fa-solid fa-file-export"></i></button>
-        <button class="ccm-icon-btn ccm-danger" data-action="delete-character" data-character-id="${escapeHtml(character.id)}" aria-label="Удалить персонажа"><i class="fa-solid fa-trash"></i></button>
+        <button class="menu_button fa-fw" data-action="back-presets" aria-label="Назад" title="Назад"><i class="fa-solid fa-arrow-left"></i></button>
+        <label class="ccm-name-field"><small>Имя персонажа</small><input class="text_pole" id="ccm-character-name" maxlength="120" value="${escapeHtml(character.name)}"></label>
+        <button class="menu_button fa-fw" data-action="export-profile" data-character-id="${escapeHtml(character.id)}" aria-label="Экспортировать профиль" title="Экспорт профиля"><i class="fa-solid fa-file-export"></i></button>
+        <button class="menu_button fa-fw" data-action="delete-character" data-character-id="${escapeHtml(character.id)}" aria-label="Удалить персонажа" title="Удалить персонажа"><i class="fa-solid fa-trash"></i></button>
     </section>
-    <div class="ccm-mode-tabs">${MODES.map(item => `<button data-action="edit-mode" data-mode="${item}" class="${item === mode ? 'is-on' : ''}">${MODE_LABELS[item]}<b>${character.modes[item].length}</b></button>`).join('')}</div>
-    <p class="ccm-help">Каждый промпт проверяет свою частоту отдельно. Сила определяет, насколько заметно он влияет на ответ.</p>
-    <div class="ccm-stack">${prompts.map(prompt => promptEditorHtml(prompt, `character:${character.id}:${mode}`)).join('') || emptyHtml(`В ${MODE_LABELS[mode]} пока пусто`, 'Добавь конкретное поведение или правило для этого режима.')}</div>
-    <button class="ccm-primary ccm-wide" data-action="add-prompt"><i class="fa-solid fa-plus"></i> Добавить промпт в ${MODE_LABELS[mode]}</button>`;
+    <div class="ccm-mode-tabs">${MODES.map(item => `<button class="menu_button ${item === mode ? 'active' : ''}" data-action="edit-mode" data-mode="${item}">${MODE_LABELS[item]} <small>${character.modes[item].length}</small></button>`).join('')}</div>
+    <small class="ccm-help">Нажми на строку промпта, чтобы изменить текст, название, силу и частоту.</small>
+    <div class="ccm-stack">${prompts.map(prompt => promptRowHtml(prompt, `character:${character.id}:${mode}`)).join('') || emptyHtml(`В ${MODE_LABELS[mode]} пока пусто`, 'Добавь конкретное поведение или правило для этого режима.')}</div>
+    <button class="menu_button ccm-wide" data-action="add-prompt"><i class="fa-solid fa-plus"></i> Добавить промпт в ${MODE_LABELS[mode]}</button>`;
 }
 
 function renderPresetsView() {
@@ -412,22 +413,22 @@ function renderPresetsView() {
 
 function renderConstructorView() {
     const prompts = settings.constructor.prompts;
-    return `<section class="ccm-section-head"><div><span class="ccm-kicker">Дополнительно</span><h2>Общий конструктор</h2></div><label class="ccm-switch"><input id="ccm-constructor-enabled" type="checkbox" ${settings.constructor.enabled ? 'checked' : ''}><span></span></label></section>
-        <p class="ccm-help">Эти промпты работают во всех чатах вместе с активными персонажами. Каждый по-прежнему имеет собственную силу и частоту.</p>
-        <div class="ccm-starter-row"><select id="ccm-starter-select"><option value="">Заготовка из старого менеджера…</option>${STARTER_PROMPTS.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('')}</select><button class="ccm-secondary" data-action="add-starter">Добавить</button></div>
-        <div class="ccm-stack">${prompts.map(prompt => promptEditorHtml(prompt, 'constructor')).join('') || emptyHtml('Конструктор пуст', 'Добавь свой промпт или выбери заготовку выше.')}</div>
-        <button class="ccm-primary ccm-wide" data-action="add-constructor-prompt"><i class="fa-solid fa-plus"></i> Свой промпт</button>`;
+    return `<section class="ccm-section-head"><div><small>Дополнительно</small><h3>Общий конструктор</h3></div><label class="checkbox_label"><input id="ccm-constructor-enabled" type="checkbox" ${settings.constructor.enabled ? 'checked' : ''}><span>Включён</span></label></section>
+        <small class="ccm-help">Эти промпты работают во всех чатах вместе с активными персонажами.</small>
+        <select class="text_pole" id="ccm-starter-select"><option value="">Добавить заготовку из старого менеджера…</option>${STARTER_PROMPTS.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('')}</select>
+        <div class="ccm-stack">${prompts.map(prompt => promptRowHtml(prompt, 'constructor')).join('') || emptyHtml('Конструктор пуст', 'Добавь свой промпт или выбери заготовку выше.')}</div>
+        <button class="menu_button ccm-wide" data-action="add-constructor-prompt"><i class="fa-solid fa-plus"></i> Свой промпт</button>`;
 }
 
 function render() {
     if (!settings) return;
     const count = activeAssignmentCount();
     $('#ccm-count').text(count || '');
-    $('#ccm-mini b').text(count || '');
-    $('#ccm-mini').toggleClass('is-active', count > 0).toggle(settings.showFloating);
+    $('#ccm-mini small').text(count || '');
+    $('#ccm-mini').toggleClass('active', count > 0).toggle(settings.showFloating);
     $('#ccm-master-enabled').prop('checked', settings.enabled);
     $('#ccm-show-floating').prop('checked', settings.showFloating);
-    $('.ccm-nav [data-view]').removeClass('is-on').filter(`[data-view="${ui.view}"]`).addClass('is-on');
+    $('.ccm-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
     const html = ui.view === 'presets' ? renderPresetsView() : ui.view === 'constructor' ? renderConstructorView() : renderChatView();
     $('#ccm-content').html(html);
 }
@@ -450,6 +451,61 @@ function promptListFromCard(card) {
     if (scope === 'constructor') return settings.constructor.prompts;
     const [, characterId, mode] = scope.split(':');
     return findCharacter(characterId)?.modes?.[mode];
+}
+
+async function openPromptEditor(prompt, persist = true) {
+    const suffix = prompt.id.replace(/[^a-zA-Z0-9_-]/g, '');
+    const fieldIds = {
+        label: `ccm-popup-label-${suffix}`,
+        strength: `ccm-popup-strength-${suffix}`,
+        chance: `ccm-popup-chance-${suffix}`,
+        enabled: `ccm-popup-enabled-${suffix}`,
+    };
+    const popup = new Popup(
+        `<h3>${escapeHtml(prompt.label || 'Новый промпт')}</h3><small>Опиши, что должен учитывать AI. Можно использовать {{char}} и {{user}}.</small>`,
+        POPUP_TYPE.INPUT,
+        prompt.text,
+        {
+            rows: 8,
+            wide: true,
+            okButton: 'Сохранить',
+            cancelButton: 'Отмена',
+            customInputs: [
+                { id: fieldIds.label, label: 'Короткое название', type: 'text', defaultState: prompt.label },
+                { id: fieldIds.strength, label: 'Сила от 1 до 10', type: 'number', min: 1, max: 10, step: 1, defaultState: prompt.strength },
+                { id: fieldIds.chance, label: 'Частота от 0 до 100%', type: 'number', min: 0, max: 100, step: 5, defaultState: prompt.chance },
+                { id: fieldIds.enabled, label: 'Активен', type: 'checkbox', defaultState: prompt.enabled },
+            ],
+        },
+    );
+    const text = await popup.show();
+    if (typeof text !== 'string') return false;
+
+    const inputResults = popup.inputResults;
+    prompt.text = text;
+    prompt.label = inputResults
+        ? String(inputResults.get(fieldIds.label) || '').trim().slice(0, 120) || 'Без названия'
+        : prompt.label;
+    prompt.strength = inputResults ? clampNumber(inputResults.get(fieldIds.strength), 1, 10, prompt.strength) : prompt.strength;
+    prompt.chance = inputResults ? clampNumber(inputResults.get(fieldIds.chance), 0, 100, prompt.chance) : prompt.chance;
+    prompt.enabled = inputResults && typeof inputResults.get(fieldIds.enabled) === 'boolean'
+        ? inputResults.get(fieldIds.enabled)
+        : prompt.enabled;
+    if (persist) {
+        commitSettings();
+        clearInjectedPrompt();
+        render();
+    }
+    return true;
+}
+
+async function createPrompt(list, defaults) {
+    const prompt = normalizePrompt(defaults);
+    if (!await openPromptEditor(prompt, false)) return;
+    list.push(prompt);
+    commitSettings();
+    clearInjectedPrompt();
+    render();
 }
 
 function removeCharacterEverywhere(characterId) {
@@ -620,9 +676,15 @@ function bindEvents() {
         commitSettings();
         render();
     });
-    $(document).on('click.ccm', '[data-action="delete-character"]', function () {
+    $(document).on('click.ccm', '[data-action="delete-character"]', async function () {
         const character = findCharacter(this.dataset.characterId);
-        if (!character || !confirm(`Удалить пресет «${character.name}»? Он будет откреплён от текущего чата.`)) return;
+        if (!character) return;
+        const confirmed = await Popup.show.confirm(
+            'Удалить персонажа?',
+            `Пресет «${escapeHtml(character.name)}» будет удалён и откреплён от текущего чата.`,
+            { okButton: 'Удалить', cancelButton: 'Отмена' },
+        );
+        if (!confirmed) return;
         removeCharacterEverywhere(character.id);
         ui.editCharacterId = null;
         commitSettings();
@@ -633,14 +695,10 @@ function bindEvents() {
         ui.editMode = this.dataset.mode;
         render();
     });
-    $(document).on('click.ccm', '[data-action="add-prompt"]', function () {
+    $(document).on('click.ccm', '[data-action="add-prompt"]', async function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
-        character.modes[ui.editMode].push(normalizePrompt({ label: 'Новый промпт', text: '', chance: 70, strength: 5 }));
-        commitSettings();
-        clearInjectedPrompt();
-        render();
-        setTimeout(() => $('.ccm-prompt-card:last [data-field="label"]').trigger('focus').select(), 0);
+        await createPrompt(character.modes[ui.editMode], { label: 'Новый промпт', text: '', chance: 70, strength: 5 });
     });
     $(document).on('click.ccm', '[data-action="attach"]', function () {
         const characterId = String($('#ccm-attach-select').val() || '');
@@ -675,38 +733,32 @@ function bindEvents() {
         commitSettings();
         clearInjectedPrompt();
     });
-    $(document).on('click.ccm', '[data-action="add-constructor-prompt"]', function () {
-        settings.constructor.prompts.push(normalizePrompt({ label: 'Новый общий промпт', text: '', chance: 70, strength: 5 }));
-        commitSettings();
-        clearInjectedPrompt();
-        render();
-        setTimeout(() => $('.ccm-prompt-card:last [data-field="label"]').trigger('focus').select(), 0);
+    $(document).on('click.ccm', '[data-action="add-constructor-prompt"]', async function () {
+        await createPrompt(settings.constructor.prompts, { label: 'Новый общий промпт', text: '', chance: 70, strength: 5 });
     });
-    $(document).on('click.ccm', '[data-action="add-starter"]', function () {
-        const id = String($('#ccm-starter-select').val() || '');
+    $(document).on('change.ccm', '#ccm-starter-select', async function () {
+        const id = String(this.value || '');
+        this.value = '';
         const starter = STARTER_PROMPTS.find(item => item.id === id);
-        if (!starter) return notify('Сначала выбери заготовку');
-        settings.constructor.prompts.push(normalizePrompt({ label: starter.label, text: starter.text, chance: 70, strength: 6 }));
-        commitSettings();
-        clearInjectedPrompt();
-        render();
+        if (!starter) return;
+        await createPrompt(settings.constructor.prompts, { label: starter.label, text: starter.text, chance: 70, strength: 6 });
     });
-    $(document).on('input.ccm change.ccm', '.ccm-prompt-card [data-field]', function () {
-        const card = this.closest('.ccm-prompt-card');
+    $(document).on('change.ccm', '.ccm-prompt-row [data-field="enabled"]', function () {
+        const card = this.closest('.ccm-prompt-row');
         const prompt = findPromptFromCard(card);
         if (!prompt) return;
-        const field = this.dataset.field;
-        if (field === 'enabled') prompt.enabled = this.checked;
-        else if (field === 'strength') prompt.strength = clampNumber(this.value, 1, 10, 5);
-        else if (field === 'chance') prompt.chance = clampNumber(this.value, 0, 100, 70);
-        else if (field === 'label') prompt.label = this.value.slice(0, 120);
-        else if (field === 'text') prompt.text = this.value;
-        card.querySelector(`[data-value-for="${field}"]`)?.replaceChildren(String(prompt[field]));
+        prompt.enabled = this.checked;
+        card.classList.toggle('disabled', !prompt.enabled);
         commitSettings();
         clearInjectedPrompt();
     });
+    $(document).on('click.ccm', '[data-action="edit-prompt"]', async function () {
+        const card = this.closest('.ccm-prompt-row');
+        const prompt = findPromptFromCard(card);
+        if (prompt) await openPromptEditor(prompt);
+    });
     $(document).on('click.ccm', '[data-action="delete-prompt"]', function () {
-        const card = this.closest('.ccm-prompt-card');
+        const card = this.closest('.ccm-prompt-row');
         const list = promptListFromCard(card);
         if (!list) return;
         const index = list.findIndex(prompt => prompt.id === card.dataset.promptId);
@@ -738,7 +790,7 @@ jQuery(async () => {
             if (dryRun || SKIP_ROLL_TYPES.includes(type)) return;
             applyForGeneration();
         });
-        console.log('[Character Chemistry] v2.1.0 ready');
+        console.log('[Character Chemistry] v2.2.0 ready');
     } catch (error) {
         console.error('[Character Chemistry] Failed to initialize:', error);
         notify('Расширение не загрузилось. Подробности — в консоли.', 'error');
