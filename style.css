@@ -154,7 +154,12 @@
     gap: 8px;
 }
 
-.ccm-character-line > strong {
+.ccm-character-toggle {
+    flex: 1;
+    min-width: 0;
+}
+
+.ccm-character-toggle > strong {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -162,8 +167,14 @@
 }
 
 .ccm-mode-switch {
-    grid-template-columns: 28px repeat(3, minmax(48px, 1fr));
-    min-width: min(230px, 100%);
+    grid-template-columns: repeat(3, minmax(48px, 1fr));
+    min-width: min(200px, 100%);
+}
+
+.ccm-injection-status {
+    display: grid;
+    gap: 3px;
+    margin-bottom: 10px;
 }
 
 .ccm-card-foot > small {
@@ -337,7 +348,7 @@
 
 @media (max-width: 380px) {
     .ccm-mode-switch {
-        grid-template-columns: 28px repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .ccm-prompt-row {

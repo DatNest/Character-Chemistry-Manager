@@ -1,4 +1,4 @@
-import { setExtensionPrompt, extension_prompt_types, eventSource, event_types } from '../../../../script.js';
+import { setExtensionPrompt, extension_prompt_types, eventSource, event_types, chat_metadata, saveMetadata, updateChatMetadata } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
 import { Popup, POPUP_TYPE } from '../../../popup.js';
 
@@ -195,16 +195,40 @@ function normalizeAssignments(value) {
     const seen = new Set();
     return value.flatMap(item => {
         const characterId = String(item?.characterId || '');
-        const mode = MODES.includes(item?.mode) ? item.mode : 'off';
+        const legacyModeEnabled = MODES.includes(item?.mode);
+        const mode = legacyModeEnabled ? item.mode : 'flirt';
+        const enabled = typeof item?.enabled === 'boolean' ? item.enabled : legacyModeEnabled;
         if (!characterId || seen.has(characterId)) return [];
         seen.add(characterId);
-        return [{ characterId, mode }];
+        return [{ characterId, enabled, mode }];
     });
 }
 
+function hasOpenChat(context) {
+    const hasValue = value => value !== undefined && value !== null && value !== '' && value !== -1;
+    let chatId = context.chatId;
+    try {
+        if (!hasValue(chatId) && typeof context.getCurrentChatId === 'function') chatId = context.getCurrentChatId();
+    } catch {
+        // Older SillyTavern builds may throw while a chat is still loading.
+    }
+    return hasValue(chatId)
+        || hasValue(context.groupId)
+        || hasValue(context.characterId)
+        || (Array.isArray(context.chat) && context.chat.length > 0);
+}
+
 function getChatState(create = true) {
-    const context = getContext();
-    const metadata = context.chatMetadata;
+    let context = getContext();
+    if (!hasOpenChat(context)) return null;
+    let metadata = context.chatMetadata ?? chat_metadata;
+    if (!metadata && create) {
+        const initial = { [CHAT_META_KEY]: { assignments: [] } };
+        if (typeof context.updateChatMetadata === 'function') context.updateChatMetadata(initial, false);
+        else if (typeof updateChatMetadata === 'function') updateChatMetadata(initial, false);
+        context = getContext();
+        metadata = context.chatMetadata ?? chat_metadata;
+    }
     if (!metadata) return null;
     if (!metadata[CHAT_META_KEY] && create) metadata[CHAT_META_KEY] = { assignments: [] };
     const state = metadata[CHAT_META_KEY];
@@ -217,6 +241,7 @@ function saveChatState() {
     const context = getContext();
     if (typeof context.saveMetadata === 'function') context.saveMetadata();
     else if (typeof context.saveMetadataDebounced === 'function') context.saveMetadataDebounced();
+    else if (typeof saveMetadata === 'function') saveMetadata();
     else console.warn('[Character Chemistry] SillyTavern did not expose saveMetadata');
 }
 
@@ -260,7 +285,7 @@ function buildGenerationPrompt() {
     const selected = [];
     const chatState = getChatState(false);
     for (const assignment of chatState?.assignments || []) {
-        if (!MODES.includes(assignment.mode)) continue;
+        if (!assignment.enabled || !MODES.includes(assignment.mode)) continue;
         const character = findCharacter(assignment.characterId);
         if (!character) continue;
         for (const prompt of character.modes[assignment.mode]) {
@@ -297,7 +322,11 @@ function applyForGeneration() {
 }
 
 function activeAssignmentCount() {
-    return (getChatState(false)?.assignments || []).filter(item => MODES.includes(item.mode) && findCharacter(item.characterId)).length;
+    if (!settings.enabled) return 0;
+    return (getChatState(false)?.assignments || []).filter(item => {
+        const character = findCharacter(item.characterId);
+        return item.enabled && MODES.includes(item.mode) && character && promptCount(character, item.mode) > 0;
+    }).length;
 }
 
 function panelHtml() {
@@ -341,30 +370,62 @@ function emptyHtml(title, text) {
 
 function modeSwitchHtml(assignment) {
     return `<div class="ccm-mode-switch" role="group" aria-label="Режим персонажа">
-        <button class="menu_button ${assignment.mode === 'off' ? 'active' : ''}" data-action="set-mode" data-character-id="${escapeHtml(assignment.characterId)}" data-mode="off" title="Выключить">×</button>
         ${MODES.map(mode => `<button class="menu_button ${assignment.mode === mode ? 'active' : ''}" data-action="set-mode" data-character-id="${escapeHtml(assignment.characterId)}" data-mode="${mode}">${MODE_LABELS[mode]}</button>`).join('')}
     </div>`;
 }
 
+function injectionStatusHtml(assignments) {
+    const enabled = assignments.flatMap(assignment => {
+        if (!assignment.enabled || !MODES.includes(assignment.mode)) return [];
+        const character = findCharacter(assignment.characterId);
+        if (!character) return [];
+        return [{ character, mode: assignment.mode, count: promptCount(character, assignment.mode) }];
+    });
+    if (!settings.enabled) {
+        return '<section class="ccm-injection-status settingsSectionWrap"><strong>Инжект выключен</strong><small>Включи инъекции промптов в настройках расширения.</small></section>';
+    }
+    if (!enabled.length) {
+        return '<section class="ccm-injection-status settingsSectionWrap"><strong>Никто не инжектируется</strong><small>Поставь галочку рядом с нужным персонажем.</small></section>';
+    }
+    const active = enabled.filter(item => item.count > 0);
+    const empty = enabled.filter(item => item.count === 0);
+    const activeText = active.length
+        ? `Инжектируются: ${active.map(item => `${escapeHtml(item.character.name)} — ${MODE_LABELS[item.mode]} (до ${item.count})`).join(' · ')}`
+        : 'Сейчас инжектировать нечего: в выбранных режимах нет активных промптов.';
+    const emptyText = empty.length
+        ? `<small>Включены без активных промптов: ${empty.map(item => `${escapeHtml(item.character.name)} — ${MODE_LABELS[item.mode]}`).join(' · ')}</small>`
+        : '';
+    return `<section class="ccm-injection-status settingsSectionWrap"><strong>Инжект сейчас</strong><small>${activeText}</small>${emptyText}</section>`;
+}
+
+function assignmentStatusText(assignment, character) {
+    const mode = MODE_LABELS[assignment.mode];
+    const count = promptCount(character, assignment.mode);
+    if (!assignment.enabled) return `Выключен · выбран режим ${mode}`;
+    if (!settings.enabled) return `Включён · режим ${mode} · общий инжект отключён`;
+    if (!count) return `Включён · режим ${mode} · нет активных промптов`;
+    return `Инжектируется · режим ${mode} · до ${count} промпт(ов) за ответ`;
+}
+
 function renderChatView() {
-    const chatState = getChatState(false);
+    const chatState = getChatState(true);
     if (!chatState) return emptyHtml('Открой чат', 'Привязки персонажей появятся после открытия обычного или группового чата.');
     const assignments = chatState.assignments.filter(item => findCharacter(item.characterId));
     const assignedIds = new Set(assignments.map(item => item.characterId));
     const available = settings.characters.filter(character => !assignedIds.has(character.id));
     const cards = assignments.map(assignment => {
         const character = findCharacter(assignment.characterId);
-        const count = MODES.includes(assignment.mode) ? promptCount(character, assignment.mode) : 0;
-        return `<article class="ccm-chat-card settingsSectionWrap">
-            <div class="ccm-character-line"><strong title="${escapeHtml(character.name)}">${escapeHtml(character.name)}</strong>${modeSwitchHtml(assignment)}</div>
-            <div class="ccm-card-foot"><small>${assignment.mode === 'off' ? 'Сейчас выключен' : `${count} промпт(ов) в ${MODE_LABELS[assignment.mode]}`}</small><button class="menu_button fa-fw" data-action="detach" data-character-id="${escapeHtml(character.id)}" aria-label="Открепить" title="Открепить"><i class="fa-solid fa-link-slash"></i></button></div>
+        return `<article class="ccm-chat-card settingsSectionWrap ${assignment.enabled ? '' : 'disabled'}">
+            <div class="ccm-character-line"><label class="checkbox_label ccm-character-toggle"><input type="checkbox" data-action="toggle-character" data-character-id="${escapeHtml(character.id)}" ${assignment.enabled ? 'checked' : ''}><strong title="${escapeHtml(character.name)}">${escapeHtml(character.name)}</strong></label>${modeSwitchHtml(assignment)}</div>
+            <div class="ccm-card-foot"><small>${assignmentStatusText(assignment, character)}</small><button class="menu_button fa-fw" data-action="detach" data-character-id="${escapeHtml(character.id)}" aria-label="Открепить" title="Открепить"><i class="fa-solid fa-link-slash"></i></button></div>
         </article>`;
     }).join('');
     const picker = available.length
         ? `<div class="ccm-add-row"><select class="text_pole" id="ccm-attach-select">${available.map(character => `<option value="${escapeHtml(character.id)}">${escapeHtml(character.name)}</option>`).join('')}</select><button class="menu_button menu_button_icon" data-action="attach"><i class="fa-solid fa-plus"></i><span>Добавить</span></button></div>`
         : settings.characters.length ? '<small>Все созданные персонажи уже прикреплены.</small>' : '<button class="menu_button ccm-wide" data-view="presets"><i class="fa-solid fa-plus"></i> Создать первого персонажа</button>';
     return `<section class="ccm-section-head"><div><small>Этот чат</small><h3>${escapeHtml(currentChatName())}</h3></div></section>
-        <small class="ccm-help">Можно прикрепить несколько персонажей. Режим напротив имени действует только в этом чате.</small>
+        ${injectionStatusHtml(assignments)}
+        <small class="ccm-help">Галочка включает персонажа. Flirt, Spicy или Sex выбирает его активный режим только для этого чата.</small>
         <div class="ccm-stack">${cards || emptyHtml('Пока никого', 'Добавь пресет ниже, затем выбери Flirt, Spicy или Sex.')}</div>
         <section class="ccm-subsection"><h4>Добавить персонажа</h4>${picker}</section>`;
 }
@@ -645,6 +706,7 @@ function bindEvents() {
         settings.enabled = this.checked;
         commitSettings();
         clearInjectedPrompt();
+        render();
     });
     $('#ccm-show-floating').on('change.ccm', function () {
         settings.showFloating = this.checked;
@@ -713,7 +775,7 @@ function bindEvents() {
         const chatState = getChatState();
         if (!chatState || !findCharacter(characterId)) return;
         if (!chatState.assignments.some(item => item.characterId === characterId)) {
-            chatState.assignments.push({ characterId, mode: 'off' });
+            chatState.assignments.push({ characterId, enabled: false, mode: 'flirt' });
             saveChatState();
         }
         clearInjectedPrompt();
@@ -727,11 +789,20 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
+    $(document).on('change.ccm', '[data-action="toggle-character"]', function () {
+        const chatState = getChatState(false);
+        const assignment = chatState?.assignments.find(item => item.characterId === this.dataset.characterId);
+        if (!assignment) return;
+        assignment.enabled = this.checked;
+        saveChatState();
+        clearInjectedPrompt();
+        render();
+    });
     $(document).on('click.ccm', '[data-action="set-mode"]', function () {
         const chatState = getChatState(false);
         const assignment = chatState?.assignments.find(item => item.characterId === this.dataset.characterId);
         if (!assignment) return;
-        assignment.mode = MODES.includes(this.dataset.mode) ? this.dataset.mode : 'off';
+        assignment.mode = MODES.includes(this.dataset.mode) ? this.dataset.mode : 'flirt';
         saveChatState();
         clearInjectedPrompt();
         render();
@@ -798,7 +869,7 @@ jQuery(async () => {
             if (dryRun || SKIP_ROLL_TYPES.includes(type)) return;
             applyForGeneration();
         });
-        console.log('[Character Chemistry] v2.2.1 ready');
+        console.log('[Character Chemistry] v2.3.0 ready');
     } catch (error) {
         console.error('[Character Chemistry] Failed to initialize:', error);
         notify('Расширение не загрузилось. Подробности — в консоли.', 'error');

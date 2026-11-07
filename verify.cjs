@@ -34,11 +34,18 @@ const context = vm.createContext({
     Math: Object.create(Math),
     Popup: MockPopup,
     POPUP_TYPE: { INPUT: 3, DISPLAY: 4 },
+    chat_metadata: {},
+    saveMetadata: () => {},
+    updateChatMetadata: values => { context.chat_metadata = { ...(context.chat_metadata || {}), ...values }; },
 });
 context.globalThis = context;
 context.mockContext = {
     extensionSettings: {},
     chatMetadata: { character_chemistry_manager: { assignments: [] } },
+    chatId: 'test-chat',
+    characterId: 0,
+    characters: [{ name: 'Test Character' }],
+    getCurrentChatId: () => 'test-chat',
     saveSettingsDebounced() {},
     saveMetadata() {},
 };
@@ -101,19 +108,49 @@ assert.match(prompt, /Strength: 4\/10/);
 const assignments = vm.runInContext(`normalizeAssignments([
     { characterId: 'alex', mode: 'sex' },
     { characterId: 'alex', mode: 'flirt' },
-    { characterId: 'mia', mode: 'unknown' }
+    { characterId: 'mia', mode: 'unknown' },
+    { characterId: 'zoe', enabled: false, mode: 'spicy' }
 ])`, context);
 assert.deepEqual(JSON.parse(JSON.stringify(assignments)), [
-    { characterId: 'alex', mode: 'sex' },
-    { characterId: 'mia', mode: 'off' },
+    { characterId: 'alex', enabled: true, mode: 'sex' },
+    { characterId: 'mia', enabled: false, mode: 'flirt' },
+    { characterId: 'zoe', enabled: false, mode: 'spicy' },
 ]);
+
+assert.equal(vm.runInContext('activeAssignmentCount()', context), 2);
+context.mockContext.chatMetadata.character_chemistry_manager.assignments[0].enabled = false;
+const disabledPrompt = vm.runInContext('buildGenerationPrompt()', context);
+assert.doesNotMatch(disabledPrompt, /FLIRT_ONLY/);
+assert.equal(vm.runInContext('activeAssignmentCount()', context), 1);
+context.mockContext.chatMetadata.character_chemistry_manager.assignments[0].enabled = true;
+
+const primaryMetadata = context.mockContext.chatMetadata;
+context.chat_metadata = { character_chemistry_manager: { assignments: [{ characterId: 'alex', enabled: true, mode: 'spicy' }] } };
+context.mockContext.chatMetadata = null;
+assert.equal(vm.runInContext('getChatState(false).assignments[0].mode', context), 'spicy');
+context.mockContext.chatMetadata = primaryMetadata;
+
+const openChatContext = context.mockContext;
+context.mockContext = { chatMetadata: {}, chatId: null, characterId: -1, groupId: null, chat: [] };
+assert.equal(vm.runInContext('getChatState()', context), null);
+context.mockContext = openChatContext;
+
+context.chat_metadata = null;
+context.mockContext.chatMetadata = null;
+assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('getChatState()', context))), { assignments: [] });
+context.mockContext.chatMetadata = primaryMetadata;
+
+const chatHtml = vm.runInContext('renderChatView()', context);
+assert.match(chatHtml, /data-action="toggle-character"/);
+assert.match(chatHtml, /Инжект сейчас/);
+assert.match(chatHtml, /Alex — Flirt/);
 
 assert.equal(vm.runInContext(`escapeHtml('<img src=x onerror=1>')`, context), '&lt;img src=x onerror=1&gt;');
 assert.equal(vm.runInContext(`uniqueImportedName('Alex')`, context), 'Alex (импорт)');
 assert.equal(vm.runInContext(`safeFilePart('A/B:*?')`, context), 'A-B-');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
-assert.equal(manifest.version, '2.2.1');
+assert.equal(manifest.version, '2.3.0');
 assert.equal(manifest.auto_update, false);
 
 assert.match(source, /character-chemistry-profile/);
@@ -130,6 +167,8 @@ assert.doesNotMatch(source, /ccm-prompt-card/);
 assert.doesNotMatch(source, /data-action="add-starter"/);
 assert.doesNotMatch(source, /drawer-content openDrawer/);
 assert.doesNotMatch(source, /data-action="close"/);
+assert.match(source, /data-action="toggle-character"/);
+assert.match(source, /function injectionStatusHtml\(/);
 
 const styleSource = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 for (const property of ['color', 'background', 'border', 'border-radius', 'box-shadow', 'font', 'font-family', 'font-size', 'opacity', 'filter', 'backdrop-filter']) {
