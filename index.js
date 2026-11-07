@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS = {
 
 let settings;
 let ui = { view: 'chat', editCharacterId: null, editMode: 'flirt' };
+let managerPopup = null;
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -299,19 +300,21 @@ function activeAssignmentCount() {
     return (getChatState(false)?.assignments || []).filter(item => MODES.includes(item.mode) && findCharacter(item.characterId)).length;
 }
 
-function shellHtml() {
+function panelHtml() {
     return `
-        <div id="ccm-panel" class="ccm-panel drawer-content openDrawer ccm-hidden" role="dialog" aria-label="Character Chemistry">
+        <div id="ccm-panel" class="ccm-panel" aria-label="Character Chemistry">
             <header class="ccm-header">
                 <h3 class="ccm-brand"><i class="fa-solid fa-fire-flame-curved"></i><span>Character Chemistry</span><small id="ccm-count"></small></h3>
-                <button class="menu_button fa-fw" data-action="close" aria-label="Закрыть" title="Закрыть"><i class="fa-solid fa-xmark"></i></button>
             </header>
             <nav class="ccm-nav" aria-label="Разделы">
                 <button class="menu_button" data-view="chat">Чат</button><button class="menu_button" data-view="presets">Персонажи</button><button class="menu_button" data-view="constructor">Конструктор</button>
             </nav>
             <main id="ccm-content" class="ccm-content"></main>
-        </div>
-        <button id="ccm-mini" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small></small></button>`;
+        </div>`;
+}
+
+function shellHtml() {
+    return `<button id="ccm-mini" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small></small></button>`;
 }
 
 function settingsHtml() {
@@ -434,8 +437,14 @@ function render() {
 }
 
 function showPanel() {
-    $('#ccm-panel').removeClass('ccm-hidden');
-    render();
+    if (managerPopup) return;
+    managerPopup = new Popup(panelHtml(), POPUP_TYPE.DISPLAY, '', {
+        leftAlign: true,
+        allowVerticalScrolling: false,
+        onOpen: () => render(),
+        onClose: () => { managerPopup = null; },
+    });
+    void managerPopup.show();
 }
 
 function findPromptFromCard(card) {
@@ -631,8 +640,7 @@ function bindEvents() {
         render();
     });
     $(document).on('click.ccm', '[data-action="open"]', showPanel);
-    $(document).on('click.ccm', '[data-action="close"]', () => $('#ccm-panel').addClass('ccm-hidden'));
-    $('#ccm-mini').on('click.ccm', () => $('#ccm-panel').hasClass('ccm-hidden') ? showPanel() : $('#ccm-panel').addClass('ccm-hidden'));
+    $('#ccm-mini').on('click.ccm', showPanel);
     $('#ccm-master-enabled').on('change.ccm', function () {
         settings.enabled = this.checked;
         commitSettings();
@@ -790,7 +798,7 @@ jQuery(async () => {
             if (dryRun || SKIP_ROLL_TYPES.includes(type)) return;
             applyForGeneration();
         });
-        console.log('[Character Chemistry] v2.2.0 ready');
+        console.log('[Character Chemistry] v2.2.1 ready');
     } catch (error) {
         console.error('[Character Chemistry] Failed to initialize:', error);
         notify('Расширение не загрузилось. Подробности — в консоли.', 'error');

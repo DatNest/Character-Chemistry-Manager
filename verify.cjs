@@ -8,6 +8,22 @@ let source = fs.readFileSync(sourcePath, 'utf8');
 source = source.replace(/^import .*;\r?\n/gm, '');
 source = source.slice(0, source.indexOf('jQuery(async () =>'));
 
+let popupCreates = 0;
+class MockPopup {
+    constructor(content, type, inputValue, options) {
+        popupCreates += 1;
+        this.content = content;
+        this.type = type;
+        this.inputValue = inputValue;
+        this.options = options;
+        this.shown = false;
+    }
+    show() {
+        this.shown = true;
+        return Promise.resolve(null);
+    }
+}
+
 const context = vm.createContext({
     console,
     crypto: { randomUUID: () => 'test-id' },
@@ -16,6 +32,8 @@ const context = vm.createContext({
     extension_prompt_types: { IN_CHAT: 1 },
     getContext: () => context.mockContext,
     Math: Object.create(Math),
+    Popup: MockPopup,
+    POPUP_TYPE: { INPUT: 3, DISPLAY: 4 },
 });
 context.globalThis = context;
 context.mockContext = {
@@ -26,6 +44,10 @@ context.mockContext = {
 };
 
 vm.runInContext(source, context, { filename: sourcePath });
+assert.equal(vm.runInContext('showPanel(); managerPopup.shown && managerPopup.type === POPUP_TYPE.DISPLAY', context), true);
+vm.runInContext('showPanel()', context);
+assert.equal(popupCreates, 1, 'Repeated clicks must not open duplicate manager popups');
+assert.equal(vm.runInContext('managerPopup.options.onClose(); managerPopup === null', context), true);
 vm.runInContext(`
     settings = normalizeSettings({
         enabled: true,
@@ -91,20 +113,23 @@ assert.equal(vm.runInContext(`uniqueImportedName('Alex')`, context), 'Alex (им
 assert.equal(vm.runInContext(`safeFilePart('A/B:*?')`, context), 'A-B-');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
-assert.equal(manifest.version, '2.2.0');
+assert.equal(manifest.version, '2.2.1');
 assert.equal(manifest.auto_update, false);
 
 assert.match(source, /character-chemistry-profile/);
 assert.match(source, /function exportProfile/);
 assert.match(source, /async function importProfile/);
 assert.match(source, /new Popup\(/);
-assert.match(source, /drawer-content openDrawer/);
+assert.match(source, /POPUP_TYPE\.DISPLAY/);
+assert.match(source, /function panelHtml\(/);
 assert.match(source, /class="menu_button/);
 assert.match(source, /class="text_pole/);
 assert.match(source, /settingsSectionWrap/);
 assert.match(source, /checkbox_label/);
 assert.doesNotMatch(source, /ccm-prompt-card/);
 assert.doesNotMatch(source, /data-action="add-starter"/);
+assert.doesNotMatch(source, /drawer-content openDrawer/);
+assert.doesNotMatch(source, /data-action="close"/);
 
 const styleSource = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 for (const property of ['color', 'background', 'border', 'border-radius', 'box-shadow', 'font', 'font-family', 'font-size', 'opacity', 'filter', 'backdrop-filter']) {

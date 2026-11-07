@@ -16,16 +16,15 @@
     box-sizing: border-box;
 }
 
-.ccm-panel.drawer-content.openDrawer {
-    position: fixed;
-    z-index: 100001;
-    top: 50px;
-    right: 15px;
-    left: auto;
-    width: min(380px, calc(100vw - 30px));
+.popup:has(.ccm-panel) {
+    width: min(400px, calc(100dvw - 20px));
+}
+
+.ccm-panel {
+    width: 100%;
     min-width: 0;
-    height: min(680px, calc(100dvh - 70px));
-    max-height: calc(100dvh - 70px);
+    height: min(680px, calc(100dvh - 80px));
+    max-height: calc(100dvh - 80px);
     margin: 0;
     padding: 0;
     overflow: hidden;
@@ -303,11 +302,11 @@
 }
 
 @media (max-width: 600px) {
-    .ccm-panel.drawer-content.openDrawer {
-        top: 50px;
-        right: 10px;
-        left: 10px;
-        width: auto;
+    .popup:has(.ccm-panel) {
+        width: calc(100dvw - 20px);
+    }
+
+    .ccm-panel {
         height: min(680px, 70dvh);
         max-height: 70dvh;
     }
