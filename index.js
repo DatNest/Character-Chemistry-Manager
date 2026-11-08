@@ -46,9 +46,12 @@ const STARTER_PROMPTS = [
 ].map(([id, label, text]) => ({ id, label, text }));
 
 const DEFAULT_SETTINGS = {
-    version: 1,
+    version: 2,
     enabled: true,
-    showFloating: true,
+    floating: {
+        desktop: { visible: true, position: null },
+        mobile: { visible: true, position: null },
+    },
     characters: [],
     constructor: { enabled: false, prompts: [] },
     legacyMigrated: false,
@@ -79,6 +82,26 @@ function escapeHtml(value) {
 function clampNumber(value, min, max, fallback) {
     const number = Number(value);
     return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+}
+
+function floatingDeviceKey() {
+    return globalThis.matchMedia?.('(max-width: 600px)')?.matches ? 'mobile' : 'desktop';
+}
+
+function normalizeFloatingPosition(value) {
+    if (!value || typeof value !== 'object') return null;
+    const x = Number(value.x);
+    const y = Number(value.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: clampNumber(x, 0, 1, 1), y: clampNumber(y, 0, 1, 0.8) };
+}
+
+function normalizeFloatingDevice(value, visibleFallback) {
+    const source = value && typeof value === 'object' ? value : {};
+    return {
+        visible: typeof source.visible === 'boolean' ? source.visible : visibleFallback,
+        position: normalizeFloatingPosition(source.position),
+    };
 }
 
 function normalizePrompt(value) {
@@ -113,9 +136,12 @@ function normalizeCharacter(value) {
 function normalizeSettings(value) {
     const source = value && typeof value === 'object' ? value : {};
     return {
-        version: 1,
+        version: 2,
         enabled: source.enabled !== false,
-        showFloating: source.showFloating !== false,
+        floating: {
+            desktop: normalizeFloatingDevice(source.floating?.desktop, source.showFloating !== false),
+            mobile: normalizeFloatingDevice(source.floating?.mobile, true),
+        },
         characters: Array.isArray(source.characters) ? source.characters.map(normalizeCharacter) : [],
         constructor: {
             enabled: source.constructor?.enabled === true,
@@ -173,7 +199,7 @@ function migrateLegacyLocalStorage() {
         }
         if (settings.constructor.prompts.length) {
             settings.constructor.enabled = source.enabled !== false;
-            settings.showFloating = legacy.showFloating !== false;
+            settings.floating[floatingDeviceKey()].visible = legacy.showFloating !== false;
             notify('Старые активные промпты перенесены в общий конструктор');
         }
     } catch (error) {
@@ -329,6 +355,125 @@ function activeAssignmentCount() {
     }).length;
 }
 
+function currentFloatingSettings() {
+    return settings.floating[floatingDeviceKey()];
+}
+
+function visibleViewport() {
+    const viewport = globalThis.visualViewport;
+    return {
+        left: Number(viewport?.offsetLeft || 0),
+        top: Number(viewport?.offsetTop || 0),
+        width: Number(viewport?.width || globalThis.innerWidth || 0),
+        height: Number(viewport?.height || globalThis.innerHeight || 0),
+    };
+}
+
+function floatingBounds(button) {
+    const viewport = visibleViewport();
+    const margin = 8;
+    const width = button.offsetWidth || 42;
+    const height = button.offsetHeight || 42;
+    return {
+        left: viewport.left + margin,
+        top: viewport.top + margin,
+        width: Math.max(0, viewport.width - width - margin * 2),
+        height: Math.max(0, viewport.height - height - margin * 2),
+    };
+}
+
+function applyFloatingButtonPosition() {
+    const button = document.getElementById('ccm-mini');
+    if (!button) return;
+    const position = currentFloatingSettings().position;
+    if (!position) {
+        button.style.removeProperty('left');
+        button.style.removeProperty('top');
+        button.style.removeProperty('right');
+        button.style.removeProperty('bottom');
+        return;
+    }
+    const bounds = floatingBounds(button);
+    button.style.left = `${Math.round(bounds.left + bounds.width * position.x)}px`;
+    button.style.top = `${Math.round(bounds.top + bounds.height * position.y)}px`;
+    button.style.right = 'auto';
+    button.style.bottom = 'auto';
+}
+
+function saveFloatingButtonPosition(button) {
+    const bounds = floatingBounds(button);
+    const rect = button.getBoundingClientRect();
+    currentFloatingSettings().position = {
+        x: bounds.width ? clampNumber((rect.left - bounds.left) / bounds.width, 0, 1, 1) : 0,
+        y: bounds.height ? clampNumber((rect.top - bounds.top) / bounds.height, 0, 1, 0.8) : 0,
+    };
+    commitSettings();
+}
+
+function bindFloatingButton() {
+    const button = document.getElementById('ccm-mini');
+    if (!button) return;
+    let drag = null;
+    let suppressClickUntil = 0;
+
+    button.addEventListener('pointerdown', event => {
+        if (event.button !== undefined && event.button !== 0) return;
+        const rect = button.getBoundingClientRect();
+        drag = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            left: rect.left,
+            top: rect.top,
+            moved: false,
+        };
+        button.setPointerCapture?.(event.pointerId);
+    });
+
+    button.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const deltaX = event.clientX - drag.startX;
+        const deltaY = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(deltaX, deltaY) < 6) return;
+        drag.moved = true;
+        const bounds = floatingBounds(button);
+        button.style.left = `${clampNumber(drag.left + deltaX, bounds.left, bounds.left + bounds.width, bounds.left)}px`;
+        button.style.top = `${clampNumber(drag.top + deltaY, bounds.top, bounds.top + bounds.height, bounds.top)}px`;
+        button.style.right = 'auto';
+        button.style.bottom = 'auto';
+        event.preventDefault();
+    });
+
+    button.addEventListener('pointerup', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        button.releasePointerCapture?.(event.pointerId);
+        if (drag.moved) {
+            saveFloatingButtonPosition(button);
+            suppressClickUntil = Date.now() + 500;
+        }
+        drag = null;
+    });
+
+    button.addEventListener('pointercancel', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        drag = null;
+        applyFloatingButtonPosition();
+    });
+
+    button.addEventListener('click', event => {
+        if (Date.now() < suppressClickUntil) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+        showPanel();
+    });
+
+    $(globalThis).on('resize.ccm', applyFloatingButtonPosition);
+    globalThis.visualViewport?.addEventListener('resize', applyFloatingButtonPosition);
+    globalThis.visualViewport?.addEventListener('scroll', applyFloatingButtonPosition);
+}
+
 function panelHtml() {
     return `
         <div id="ccm-panel" class="ccm-panel" aria-label="Character Chemistry">
@@ -352,7 +497,7 @@ function settingsHtml() {
             <div class="inline-drawer-toggle inline-drawer-header"><b><i class="fa-solid fa-fire-flame-curved"></i> Character Chemistry</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
             <div class="inline-drawer-content"><div class="ccm-settings-body">
                 <label class="checkbox_label"><input id="ccm-master-enabled" type="checkbox"><span>Включить инъекции промптов</span></label>
-                <label class="checkbox_label"><input id="ccm-show-floating" type="checkbox"><span>Показывать плавающую кнопку</span></label>
+                <label class="checkbox_label"><input id="ccm-show-floating" type="checkbox"><span>Показывать плавающую кнопку на этом устройстве</span></label>
                 <small>Пресеты хранятся в настройках SillyTavern, а выбранные персонажи и режимы — в файле текущего чата.</small>
                 <div class="ccm-settings-actions">
                     <button class="menu_button menu_button_icon" data-action="open"><i class="fa-solid fa-sliders"></i><span>Открыть</span></button>
@@ -487,14 +632,16 @@ function renderConstructorView() {
 function render() {
     if (!settings) return;
     const count = activeAssignmentCount();
+    const floating = currentFloatingSettings();
     $('#ccm-count').text(count || '');
     $('#ccm-mini small').text(count || '');
-    $('#ccm-mini').toggleClass('active', count > 0).toggle(settings.showFloating);
+    $('#ccm-mini').toggleClass('active', count > 0).toggle(floating.visible);
     $('#ccm-master-enabled').prop('checked', settings.enabled);
-    $('#ccm-show-floating').prop('checked', settings.showFloating);
+    $('#ccm-show-floating').prop('checked', floating.visible);
     $('.ccm-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
     const html = ui.view === 'presets' ? renderPresetsView() : ui.view === 'constructor' ? renderConstructorView() : renderChatView();
     $('#ccm-content').html(html);
+    if (floating.visible) globalThis.requestAnimationFrame?.(applyFloatingButtonPosition);
 }
 
 function showPanel() {
@@ -695,13 +842,13 @@ async function importSettings(file) {
 }
 
 function bindEvents() {
+    bindFloatingButton();
     $(document).on('click.ccm', '[data-view]', function () {
         ui.view = this.dataset.view;
         ui.editCharacterId = null;
         render();
     });
     $(document).on('click.ccm', '[data-action="open"]', showPanel);
-    $('#ccm-mini').on('click.ccm', showPanel);
     $('#ccm-master-enabled').on('change.ccm', function () {
         settings.enabled = this.checked;
         commitSettings();
@@ -709,7 +856,7 @@ function bindEvents() {
         render();
     });
     $('#ccm-show-floating').on('change.ccm', function () {
-        settings.showFloating = this.checked;
+        currentFloatingSettings().visible = this.checked;
         commitSettings();
         render();
     });
@@ -869,7 +1016,7 @@ jQuery(async () => {
             if (dryRun || SKIP_ROLL_TYPES.includes(type)) return;
             applyForGeneration();
         });
-        console.log('[Character Chemistry] v2.3.0 ready');
+        console.log('[Character Chemistry] v2.3.1 ready');
     } catch (error) {
         console.error('[Character Chemistry] Failed to initialize:', error);
         notify('Расширение не загрузилось. Подробности — в консоли.', 'error');

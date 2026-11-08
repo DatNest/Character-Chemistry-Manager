@@ -55,6 +55,14 @@ assert.equal(vm.runInContext('showPanel(); managerPopup.shown && managerPopup.ty
 vm.runInContext('showPanel()', context);
 assert.equal(popupCreates, 1, 'Repeated clicks must not open duplicate manager popups');
 assert.equal(vm.runInContext('managerPopup.options.onClose(); managerPopup === null', context), true);
+const floatingMigration = vm.runInContext(`normalizeSettings({
+    showFloating: false,
+    floating: { mobile: { position: { x: 2, y: -1 } } }
+}).floating`, context);
+assert.deepEqual(JSON.parse(JSON.stringify(floatingMigration)), {
+    desktop: { visible: false, position: null },
+    mobile: { visible: true, position: { x: 1, y: 0 } },
+});
 vm.runInContext(`
     settings = normalizeSettings({
         enabled: true,
@@ -150,7 +158,7 @@ assert.equal(vm.runInContext(`uniqueImportedName('Alex')`, context), 'Alex (им
 assert.equal(vm.runInContext(`safeFilePart('A/B:*?')`, context), 'A-B-');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
-assert.equal(manifest.version, '2.3.0');
+assert.equal(manifest.version, '2.3.1');
 assert.equal(manifest.auto_update, false);
 
 assert.match(source, /character-chemistry-profile/);
@@ -169,6 +177,10 @@ assert.doesNotMatch(source, /drawer-content openDrawer/);
 assert.doesNotMatch(source, /data-action="close"/);
 assert.match(source, /data-action="toggle-character"/);
 assert.match(source, /function injectionStatusHtml\(/);
+assert.match(source, /function bindFloatingButton\(/);
+assert.match(source, /addEventListener\('pointerdown'/);
+assert.match(source, /addEventListener\('pointermove'/);
+assert.doesNotMatch(source, /\$\('#ccm-mini'\)\.on\('click/);
 
 const styleSource = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 for (const property of ['color', 'background', 'border', 'border-radius', 'box-shadow', 'font', 'font-family', 'font-size', 'opacity', 'filter', 'backdrop-filter']) {

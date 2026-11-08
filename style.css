@@ -279,11 +279,19 @@
 .ccm-mini {
     position: fixed;
     z-index: 100000;
-    right: 18px;
-    bottom: 82px;
+    right: calc(18px + env(safe-area-inset-right, 0px));
+    bottom: calc(var(--bottomFormBlockSize, 64px) + 16px + env(safe-area-inset-bottom, 0px));
     width: 42px;
     height: 42px;
     margin: 0;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grab;
+}
+
+.ccm-mini:active {
+    cursor: grabbing;
 }
 
 .ccm-mini > small {
@@ -341,8 +349,8 @@
     }
 
     .ccm-mini {
-        right: 12px;
-        bottom: 74px;
+        right: calc(12px + env(safe-area-inset-right, 0px));
+        bottom: calc(var(--bottomFormBlockSize, 64px) + 12px + env(safe-area-inset-bottom, 0px));
     }
 }
 
