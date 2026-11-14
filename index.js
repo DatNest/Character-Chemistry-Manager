@@ -10,6 +10,8 @@ const PROFILE_EXPORT_FORMAT = 'character-chemistry-profile';
 const MODES = ['flirt', 'spicy', 'sex'];
 const SKIP_ROLL_TYPES = ['quiet', 'impersonate', 'continue'];
 const MODE_LABELS = { flirt: 'Flirt', spicy: 'Spicy', sex: 'Sex' };
+const PROMPTS_FIRST = 30;
+const PROMPTS_MORE = 30;
 
 // Optional templates preserved from the original extension. Nothing is enabled automatically.
 const STARTER_PROMPTS = [
@@ -58,8 +60,14 @@ const DEFAULT_SETTINGS = {
 };
 
 let settings;
-let ui = { view: 'chat', editCharacterId: null, editMode: 'flirt' };
+let ui = { view: 'chat', editCharacterId: null, editMode: 'flirt', promptOffset: PROMPTS_FIRST, constructorOffset: PROMPTS_FIRST };
 let managerPopup = null;
+let characterIndexRevision = -1;
+let settingsRevision = 0;
+let characterIndex = new Map();
+let characterNameSaveTimer = null;
+let floatingPositionFrame = 0;
+const assignmentNormalizationCache = new WeakMap();
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -166,7 +174,23 @@ function commitSettings() {
     const container = getSettingsContainer();
     if (!container) return;
     container[EXTENSION_KEY] = settings;
+    settingsRevision++;
     queueSettingsSave();
+}
+
+function scheduleCharacterNameSave() {
+    globalThis.clearTimeout(characterNameSaveTimer);
+    characterNameSaveTimer = globalThis.setTimeout(() => {
+        characterNameSaveTimer = null;
+        commitSettings();
+    }, 300);
+}
+
+function flushCharacterNameSave() {
+    if (!characterNameSaveTimer) return;
+    globalThis.clearTimeout(characterNameSaveTimer);
+    characterNameSaveTimer = null;
+    commitSettings();
 }
 
 function legacyStrength(value) {
@@ -174,11 +198,11 @@ function legacyStrength(value) {
 }
 
 function migrateLegacyLocalStorage() {
-    if (settings.legacyMigrated) return;
+    if (settings.legacyMigrated) return false;
     settings.legacyMigrated = true;
     try {
         const raw = localStorage.getItem('fm_v2') || localStorage.getItem('fm');
-        if (!raw) return;
+        if (!raw) return true;
         const legacy = JSON.parse(raw);
         const source = legacy.template || legacy;
         const custom = Array.isArray(source.custom) ? source.custom : [];
@@ -205,15 +229,19 @@ function migrateLegacyLocalStorage() {
     } catch (error) {
         console.warn('[Character Chemistry] Legacy migration skipped:', error);
     }
+    return true;
 }
 
 function loadSettings() {
     const container = getSettingsContainer();
     if (!container) throw new Error('SillyTavern settings are unavailable');
-    settings = normalizeSettings(container[EXTENSION_KEY] || DEFAULT_SETTINGS);
-    migrateLegacyLocalStorage();
+    const stored = container[EXTENSION_KEY];
+    settings = normalizeSettings(stored || DEFAULT_SETTINGS);
+    const migrated = migrateLegacyLocalStorage();
+    const normalizationRequired = !stored || stored.version !== 2 || !stored.floating?.desktop || !stored.floating?.mobile;
     container[EXTENSION_KEY] = settings;
-    commitSettings();
+    settingsRevision++;
+    if (normalizationRequired || migrated) queueSettingsSave();
 }
 
 function normalizeAssignments(value) {
@@ -228,6 +256,23 @@ function normalizeAssignments(value) {
         seen.add(characterId);
         return [{ characterId, enabled, mode }];
     });
+}
+
+function assignmentSignature(value) {
+    if (!Array.isArray(value)) return '';
+    return value.map(item => `${String(item?.characterId || '')}\u0001${String(item?.enabled)}\u0001${String(item?.mode || '')}`).join('\u0000');
+}
+
+function cachedNormalizeAssignments(value) {
+    if (!Array.isArray(value)) return [];
+    const signature = assignmentSignature(value);
+    const cached = assignmentNormalizationCache.get(value);
+    if (cached?.signature === signature) return cached.value;
+    const normalized = normalizeAssignments(value);
+    const normalizedSignature = assignmentSignature(normalized);
+    assignmentNormalizationCache.set(value, { signature, value: normalized });
+    assignmentNormalizationCache.set(normalized, { signature: normalizedSignature, value: normalized });
+    return normalized;
 }
 
 function hasOpenChat(context) {
@@ -259,7 +304,7 @@ function getChatState(create = true) {
     if (!metadata[CHAT_META_KEY] && create) metadata[CHAT_META_KEY] = { assignments: [] };
     const state = metadata[CHAT_META_KEY];
     if (!state) return null;
-    state.assignments = normalizeAssignments(state.assignments);
+    state.assignments = cachedNormalizeAssignments(state.assignments);
     return state;
 }
 
@@ -282,7 +327,11 @@ function currentChatName() {
 }
 
 function findCharacter(id) {
-    return settings.characters.find(character => character.id === id);
+    if (characterIndexRevision !== settingsRevision) {
+        characterIndex = new Map(settings.characters.map(character => [character.id, character]));
+        characterIndexRevision = settingsRevision;
+    }
+    return characterIndex.get(id);
 }
 
 function promptCount(character, mode) {
@@ -400,6 +449,15 @@ function applyFloatingButtonPosition() {
     button.style.bottom = 'auto';
 }
 
+function scheduleFloatingButtonPosition() {
+    if (floatingPositionFrame) return;
+    const schedule = globalThis.requestAnimationFrame || (callback => globalThis.setTimeout(callback, 16));
+    floatingPositionFrame = schedule(() => {
+        floatingPositionFrame = 0;
+        applyFloatingButtonPosition();
+    });
+}
+
 function saveFloatingButtonPosition(button) {
     const bounds = floatingBounds(button);
     const rect = button.getBoundingClientRect();
@@ -413,65 +471,71 @@ function saveFloatingButtonPosition(button) {
 function bindFloatingButton() {
     const button = document.getElementById('ccm-mini');
     if (!button) return;
-    let drag = null;
-    let suppressClickUntil = 0;
+    if (button.dataset.ccmPointerBound !== 'true') {
+        button.dataset.ccmPointerBound = 'true';
+        let drag = null;
+        let suppressClickUntil = 0;
 
-    button.addEventListener('pointerdown', event => {
-        if (event.button !== undefined && event.button !== 0) return;
-        const rect = button.getBoundingClientRect();
-        drag = {
-            pointerId: event.pointerId,
-            startX: event.clientX,
-            startY: event.clientY,
-            left: rect.left,
-            top: rect.top,
-            moved: false,
-        };
-        button.setPointerCapture?.(event.pointerId);
-    });
+        button.addEventListener('pointerdown', event => {
+            if (event.button !== undefined && event.button !== 0) return;
+            const rect = button.getBoundingClientRect();
+            drag = {
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+                left: rect.left,
+                top: rect.top,
+                bounds: floatingBounds(button),
+                moved: false,
+            };
+            button.setPointerCapture?.(event.pointerId);
+        });
 
-    button.addEventListener('pointermove', event => {
-        if (!drag || event.pointerId !== drag.pointerId) return;
-        const deltaX = event.clientX - drag.startX;
-        const deltaY = event.clientY - drag.startY;
-        if (!drag.moved && Math.hypot(deltaX, deltaY) < 6) return;
-        drag.moved = true;
-        const bounds = floatingBounds(button);
-        button.style.left = `${clampNumber(drag.left + deltaX, bounds.left, bounds.left + bounds.width, bounds.left)}px`;
-        button.style.top = `${clampNumber(drag.top + deltaY, bounds.top, bounds.top + bounds.height, bounds.top)}px`;
-        button.style.right = 'auto';
-        button.style.bottom = 'auto';
-        event.preventDefault();
-    });
-
-    button.addEventListener('pointerup', event => {
-        if (!drag || event.pointerId !== drag.pointerId) return;
-        button.releasePointerCapture?.(event.pointerId);
-        if (drag.moved) {
-            saveFloatingButtonPosition(button);
-            suppressClickUntil = Date.now() + 500;
-        }
-        drag = null;
-    });
-
-    button.addEventListener('pointercancel', event => {
-        if (!drag || event.pointerId !== drag.pointerId) return;
-        drag = null;
-        applyFloatingButtonPosition();
-    });
-
-    button.addEventListener('click', event => {
-        if (Date.now() < suppressClickUntil) {
+        button.addEventListener('pointermove', event => {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            const deltaX = event.clientX - drag.startX;
+            const deltaY = event.clientY - drag.startY;
+            if (!drag.moved && Math.hypot(deltaX, deltaY) < 6) return;
+            drag.moved = true;
+            const bounds = drag.bounds;
+            button.style.left = `${clampNumber(drag.left + deltaX, bounds.left, bounds.left + bounds.width, bounds.left)}px`;
+            button.style.top = `${clampNumber(drag.top + deltaY, bounds.top, bounds.top + bounds.height, bounds.top)}px`;
+            button.style.right = 'auto';
+            button.style.bottom = 'auto';
             event.preventDefault();
-            event.stopPropagation();
-            return;
-        }
-        showPanel();
-    });
+        });
 
-    $(globalThis).on('resize.ccm', applyFloatingButtonPosition);
-    globalThis.visualViewport?.addEventListener('resize', applyFloatingButtonPosition);
-    globalThis.visualViewport?.addEventListener('scroll', applyFloatingButtonPosition);
+        button.addEventListener('pointerup', event => {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            button.releasePointerCapture?.(event.pointerId);
+            if (drag.moved) {
+                saveFloatingButtonPosition(button);
+                suppressClickUntil = Date.now() + 500;
+            }
+            drag = null;
+        });
+
+        button.addEventListener('pointercancel', event => {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            drag = null;
+            applyFloatingButtonPosition();
+        });
+
+        button.addEventListener('click', event => {
+            if (Date.now() < suppressClickUntil) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            showPanel();
+        });
+    }
+
+    $(globalThis).on('resize.ccm', scheduleFloatingButtonPosition);
+    globalThis.visualViewport?.removeEventListener('resize', scheduleFloatingButtonPosition);
+    globalThis.visualViewport?.removeEventListener('scroll', scheduleFloatingButtonPosition);
+    globalThis.visualViewport?.addEventListener('resize', scheduleFloatingButtonPosition, { passive: true });
+    globalThis.visualViewport?.addEventListener('scroll', scheduleFloatingButtonPosition, { passive: true });
 }
 
 function panelHtml() {
@@ -586,7 +650,8 @@ function renderPresetList() {
 }
 
 function promptRowHtml(prompt, scope) {
-    const preview = prompt.text.trim() || 'Нажми, чтобы заполнить промпт';
+    const fullPreview = prompt.text.trim();
+    const preview = fullPreview ? `${fullPreview.slice(0, 240)}${fullPreview.length > 240 ? '…' : ''}` : 'Нажми, чтобы заполнить промпт';
     return `<article class="ccm-prompt-row settingsSectionWrap ${prompt.enabled ? '' : 'disabled'}" data-prompt-id="${escapeHtml(prompt.id)}" data-scope="${escapeHtml(scope)}">
         <label class="checkbox_label ccm-prompt-toggle" title="Включить или выключить"><input type="checkbox" data-field="enabled" aria-label="Активен" ${prompt.enabled ? 'checked' : ''}></label>
         <button class="menu_button ccm-prompt-open" data-action="edit-prompt">
@@ -601,6 +666,8 @@ function promptRowHtml(prompt, scope) {
 function renderCharacterEditor(character) {
     const mode = MODES.includes(ui.editMode) ? ui.editMode : 'flirt';
     const prompts = character.modes[mode];
+    const shown = prompts.slice(0, ui.promptOffset);
+    const more = shown.length < prompts.length ? `<button class="menu_button ccm-wide" data-action="load-more-prompts" data-scope="character">Показать ещё ${Math.min(PROMPTS_MORE, prompts.length - shown.length)}</button>` : '';
     return `<section class="ccm-editor-head">
         <button class="menu_button fa-fw" data-action="back-presets" aria-label="Назад" title="Назад"><i class="fa-solid fa-arrow-left"></i></button>
         <label class="ccm-name-field"><small>Имя персонажа</small><input class="text_pole" id="ccm-character-name" maxlength="120" value="${escapeHtml(character.name)}"></label>
@@ -609,7 +676,7 @@ function renderCharacterEditor(character) {
     </section>
     <div class="ccm-mode-tabs">${MODES.map(item => `<button class="menu_button ${item === mode ? 'active' : ''}" data-action="edit-mode" data-mode="${item}">${MODE_LABELS[item]} <small>${character.modes[item].length}</small></button>`).join('')}</div>
     <small class="ccm-help">Нажми на строку промпта, чтобы изменить текст, название, силу и частоту.</small>
-    <div class="ccm-stack">${prompts.map(prompt => promptRowHtml(prompt, `character:${character.id}:${mode}`)).join('') || emptyHtml(`В ${MODE_LABELS[mode]} пока пусто`, 'Добавь конкретное поведение или правило для этого режима.')}</div>
+    <div class="ccm-stack">${shown.map(prompt => promptRowHtml(prompt, `character:${character.id}:${mode}`)).join('') || emptyHtml(`В ${MODE_LABELS[mode]} пока пусто`, 'Добавь конкретное поведение или правило для этого режима.')}</div>${more}
     <button class="menu_button ccm-wide" data-action="add-prompt"><i class="fa-solid fa-plus"></i> Добавить промпт в ${MODE_LABELS[mode]}</button>`;
 }
 
@@ -622,10 +689,12 @@ function renderPresetsView() {
 
 function renderConstructorView() {
     const prompts = settings.constructor.prompts;
+    const shown = prompts.slice(0, ui.constructorOffset);
+    const more = shown.length < prompts.length ? `<button class="menu_button ccm-wide" data-action="load-more-prompts" data-scope="constructor">Показать ещё ${Math.min(PROMPTS_MORE, prompts.length - shown.length)}</button>` : '';
     return `<section class="ccm-section-head"><div><small>Дополнительно</small><h3>Общий конструктор</h3></div><label class="checkbox_label"><input id="ccm-constructor-enabled" type="checkbox" ${settings.constructor.enabled ? 'checked' : ''}><span>Включён</span></label></section>
         <small class="ccm-help">Эти промпты работают во всех чатах вместе с активными персонажами.</small>
         <select class="text_pole" id="ccm-starter-select"><option value="">Добавить заготовку из старого менеджера…</option>${STARTER_PROMPTS.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('')}</select>
-        <div class="ccm-stack">${prompts.map(prompt => promptRowHtml(prompt, 'constructor')).join('') || emptyHtml('Конструктор пуст', 'Добавь свой промпт или выбери заготовку выше.')}</div>
+        <div class="ccm-stack">${shown.map(prompt => promptRowHtml(prompt, 'constructor')).join('') || emptyHtml('Конструктор пуст', 'Добавь свой промпт или выбери заготовку выше.')}</div>${more}
         <button class="menu_button ccm-wide" data-action="add-constructor-prompt"><i class="fa-solid fa-plus"></i> Свой промпт</button>`;
 }
 
@@ -638,10 +707,15 @@ function render() {
     $('#ccm-mini').toggleClass('active', count > 0).toggle(floating.visible);
     $('#ccm-master-enabled').prop('checked', settings.enabled);
     $('#ccm-show-floating').prop('checked', floating.visible);
+    const content = document.getElementById('ccm-content');
+    if (!content) {
+        if (floating.visible) scheduleFloatingButtonPosition();
+        return;
+    }
     $('.ccm-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
     const html = ui.view === 'presets' ? renderPresetsView() : ui.view === 'constructor' ? renderConstructorView() : renderChatView();
-    $('#ccm-content').html(html);
-    if (floating.visible) globalThis.requestAnimationFrame?.(applyFloatingButtonPosition);
+    content.innerHTML = html;
+    if (floating.visible) scheduleFloatingButtonPosition();
 }
 
 function showPanel() {
@@ -650,7 +724,7 @@ function showPanel() {
         leftAlign: true,
         allowVerticalScrolling: false,
         onOpen: () => render(),
-        onClose: () => { managerPopup = null; },
+        onClose: () => { flushCharacterNameSave(); managerPopup = null; },
     });
     void managerPopup.show();
 }
@@ -720,6 +794,8 @@ async function createPrompt(list, defaults) {
     const prompt = normalizePrompt(defaults);
     if (!await openPromptEditor(prompt, false)) return;
     list.push(prompt);
+    if (list === settings.constructor.prompts) ui.constructorOffset = Math.max(ui.constructorOffset, list.length);
+    else ui.promptOffset = Math.max(ui.promptOffset, list.length);
     commitSettings();
     clearInjectedPrompt();
     render();
@@ -740,6 +816,7 @@ function addCharacter() {
     ui.view = 'presets';
     ui.editCharacterId = character.id;
     ui.editMode = 'flirt';
+    ui.promptOffset = PROMPTS_FIRST;
     commitSettings();
     clearInjectedPrompt();
     render();
@@ -811,6 +888,7 @@ async function importProfile(file) {
         ui.view = 'presets';
         ui.editCharacterId = character.id;
         ui.editMode = 'flirt';
+        ui.promptOffset = PROMPTS_FIRST;
         commitSettings();
         clearInjectedPrompt();
         render();
@@ -828,7 +906,7 @@ async function importSettings(file) {
         if (envelope?.format !== EXPORT_FORMAT || envelope?.version !== 1 || !envelope.settings) throw new Error('Это не файл Character Chemistry версии 1');
         settings = normalizeSettings(envelope.settings);
         settings.legacyMigrated = true;
-        ui = { view: 'chat', editCharacterId: null, editMode: 'flirt' };
+        ui = { view: 'chat', editCharacterId: null, editMode: 'flirt', promptOffset: PROMPTS_FIRST, constructorOffset: PROMPTS_FIRST };
         commitSettings();
         clearInjectedPrompt();
         render();
@@ -842,8 +920,12 @@ async function importSettings(file) {
 }
 
 function bindEvents() {
+    $(document).off('.ccm');
+    $(globalThis).off('.ccm');
+    $('#ccm-master-enabled, #ccm-show-floating, #ccm-import-file').off('.ccm');
     bindFloatingButton();
     $(document).on('click.ccm', '[data-view]', function () {
+        flushCharacterNameSave();
         ui.view = this.dataset.view;
         ui.editCharacterId = null;
         render();
@@ -874,6 +956,7 @@ function bindEvents() {
         ui.view = 'presets';
         ui.editCharacterId = this.dataset.characterId;
         ui.editMode = 'flirt';
+        ui.promptOffset = PROMPTS_FIRST;
         render();
     });
     $(document).on('click.ccm', '[data-action="back-presets"]', function () {
@@ -884,12 +967,14 @@ function bindEvents() {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         character.name = this.value.slice(0, 120);
-        commitSettings();
+        scheduleCharacterNameSave();
     });
     $(document).on('change.ccm', '#ccm-character-name', function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         character.name = this.value.trim() || 'Без имени';
+        globalThis.clearTimeout(characterNameSaveTimer);
+        characterNameSaveTimer = null;
         commitSettings();
         render();
     });
@@ -910,6 +995,12 @@ function bindEvents() {
     });
     $(document).on('click.ccm', '[data-action="edit-mode"]', function () {
         ui.editMode = this.dataset.mode;
+        ui.promptOffset = PROMPTS_FIRST;
+        render();
+    });
+    $(document).on('click.ccm', '[data-action="load-more-prompts"]', function () {
+        if (this.dataset.scope === 'constructor') ui.constructorOffset += PROMPTS_MORE;
+        else ui.promptOffset += PROMPTS_MORE;
         render();
     });
     $(document).on('click.ccm', '[data-action="add-prompt"]', async function () {
@@ -1001,8 +1092,8 @@ function bindEvents() {
 jQuery(async () => {
     try {
         loadSettings();
-        $('body').append(shellHtml());
-        $('#extensions_settings2').append(settingsHtml());
+        if (!document.getElementById('ccm-mini')) $('body').append(shellHtml());
+        if (!document.getElementById('ccm-extension-settings')) $('#extensions_settings2').append(settingsHtml());
         bindEvents();
         render();
         clearInjectedPrompt();
@@ -1016,7 +1107,7 @@ jQuery(async () => {
             if (dryRun || SKIP_ROLL_TYPES.includes(type)) return;
             applyForGeneration();
         });
-        console.log('[Character Chemistry] v2.3.1 ready');
+        console.log('[Character Chemistry] v2.3.2 ready');
     } catch (error) {
         console.error('[Character Chemistry] Failed to initialize:', error);
         notify('Расширение не загрузилось. Подробности — в консоли.', 'error');

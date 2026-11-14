@@ -126,6 +126,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(assignments)), [
 ]);
 
 assert.equal(vm.runInContext('activeAssignmentCount()', context), 2);
+assert.equal(vm.runInContext('getChatState(false).assignments === getChatState(false).assignments', context), true, 'Canonical chat assignments should be reused while unchanged');
 context.mockContext.chatMetadata.character_chemistry_manager.assignments[0].enabled = false;
 const disabledPrompt = vm.runInContext('buildGenerationPrompt()', context);
 assert.doesNotMatch(disabledPrompt, /FLIRT_ONLY/);
@@ -158,7 +159,7 @@ assert.equal(vm.runInContext(`uniqueImportedName('Alex')`, context), 'Alex (им
 assert.equal(vm.runInContext(`safeFilePart('A/B:*?')`, context), 'A-B-');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
-assert.equal(manifest.version, '2.3.1');
+assert.equal(manifest.version, '2.3.2');
 assert.equal(manifest.auto_update, false);
 
 assert.match(source, /character-chemistry-profile/);
@@ -178,6 +179,14 @@ assert.doesNotMatch(source, /data-action="close"/);
 assert.match(source, /data-action="toggle-character"/);
 assert.match(source, /function injectionStatusHtml\(/);
 assert.match(source, /function bindFloatingButton\(/);
+assert.match(source, /function scheduleFloatingButtonPosition\(/);
+assert.match(source, /if \(!content\)/);
+assert.match(source, /PROMPTS_FIRST = 30/);
+assert.match(source, /fullPreview\.slice\(0, 240\)/);
+assert.match(source, /cachedNormalizeAssignments/);
+assert.match(source, /scheduleCharacterNameSave/);
+assert.match(source, /ccmPointerBound/);
+assert.doesNotMatch(source, /MutationObserver|setInterval\(/);
 assert.match(source, /addEventListener\('pointerdown'/);
 assert.match(source, /addEventListener\('pointermove'/);
 assert.doesNotMatch(source, /\$\('#ccm-mini'\)\.on\('click/);
