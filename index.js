@@ -94,7 +94,7 @@ function clampNumber(value, min, max, fallback) {
 }
 
 function floatingDeviceKey() {
-    return globalThis.matchMedia?.('(max-width: 600px), (pointer: coarse) and (max-width: 900px)')?.matches ? 'mobile' : 'desktop';
+    return globalThis.matchMedia?.('(max-width: 600px), (pointer: coarse)')?.matches ? 'mobile' : 'desktop';
 }
 
 function normalizeFloatingPosition(value) {
@@ -342,7 +342,7 @@ function getChatState(create = true) {
     if (!state) return null;
     state.assignments = cachedNormalizeAssignments(state.assignments);
     // Existing 2.3.x chat metadata must also survive future interrupted saves.
-    if (!hasBackup || (Number(state.updatedAt) || 0) > backupTime) {
+    if ((!hasBackup || (Number(state.updatedAt) || 0) > backupTime) && (state.assignments.length || hasBackup)) {
         state.updatedAt = Number(state.updatedAt) || Date.now();
         settings.chatStates[key] = { assignments: clone(state.assignments), updatedAt: state.updatedAt };
         commitSettings();
