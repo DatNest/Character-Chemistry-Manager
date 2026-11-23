@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
         mobile: { visible: true, position: null },
     },
     characters: [],
+    chatStates: {}, // Per-chat recovery copy; authoritative state lives in chat metadata.
     constructor: { enabled: false, prompts: [] },
     legacyMigrated: false,
 };
@@ -151,6 +152,8 @@ function normalizeSettings(value) {
             mobile: normalizeFloatingDevice(source.floating?.mobile, true),
         },
         characters: Array.isArray(source.characters) ? source.characters.map(normalizeCharacter) : [],
+        chatStates: source.chatStates && typeof source.chatStates === 'object' && !Array.isArray(source.chatStates)
+            ? clone(source.chatStates) : {},
         constructor: {
             enabled: source.constructor?.enabled === true,
             prompts: Array.isArray(source.constructor?.prompts) ? source.constructor.prompts.map(normalizePrompt) : [],
@@ -238,7 +241,7 @@ function loadSettings() {
     const stored = container[EXTENSION_KEY];
     settings = normalizeSettings(stored || DEFAULT_SETTINGS);
     const migrated = migrateLegacyLocalStorage();
-    const normalizationRequired = !stored || stored.version !== 2 || !stored.floating?.desktop || !stored.floating?.mobile;
+    const normalizationRequired = !stored || stored.version !== 2 || !stored.floating?.desktop || !stored.floating?.mobile || !stored.chatStates;
     container[EXTENSION_KEY] = settings;
     settingsRevision++;
     if (normalizationRequired || migrated) queueSettingsSave();
@@ -275,24 +278,31 @@ function cachedNormalizeAssignments(value) {
     return normalized;
 }
 
-function hasOpenChat(context) {
+function chatStorageKey(context) {
+    // A character index alone is not a chat: wait for a real chat filename.
     const hasValue = value => value !== undefined && value !== null && value !== '' && value !== -1;
     let chatId = context.chatId;
-    try {
-        if (!hasValue(chatId) && typeof context.getCurrentChatId === 'function') chatId = context.getCurrentChatId();
-    } catch {
-        // Older SillyTavern builds may throw while a chat is still loading.
+    if (!hasValue(chatId) && typeof context.getCurrentChatId === 'function') {
+        try { chatId = context.getCurrentChatId(); } catch { return null; }
     }
-    return hasValue(chatId)
-        || hasValue(context.groupId)
-        || hasValue(context.characterId)
-        || (Array.isArray(context.chat) && context.chat.length > 0);
+    if (!hasValue(chatId)) return null;
+    if (hasValue(context.groupId)) return 'group:' + context.groupId + ':' + chatId;
+    const character = context.characters?.[context.characterId];
+    const owner = character?.avatar || (hasValue(context.characterId) ? 'index-' + context.characterId : null);
+    return owner ? 'character:' + owner + ':' + chatId : null;
+}
+
+function hasOpenChat(context) {
+    return !!chatStorageKey(context);
 }
 
 function getChatState(create = true) {
     let context = getContext();
-    if (!hasOpenChat(context)) return null;
+    const key = chatStorageKey(context);
+    if (!key) return null;
     let metadata = context.chatMetadata ?? chat_metadata;
+    const backup = settings?.chatStates?.[key];
+    const hasBackup = Array.isArray(backup?.assignments);
     if (!metadata && create) {
         const initial = { [CHAT_META_KEY]: { assignments: [] } };
         if (typeof context.updateChatMetadata === 'function') context.updateChatMetadata(initial, false);
@@ -300,20 +310,63 @@ function getChatState(create = true) {
         context = getContext();
         metadata = context.chatMetadata ?? chat_metadata;
     }
-    if (!metadata) return null;
-    if (!metadata[CHAT_META_KEY] && create) metadata[CHAT_META_KEY] = { assignments: [] };
-    const state = metadata[CHAT_META_KEY];
+    if (!metadata) {
+        return hasBackup ? { assignments: normalizeAssignments(backup.assignments), updatedAt: backup.updatedAt } : null;
+    }
+
+    let state = metadata[CHAT_META_KEY];
+    const backupTime = Number(backup?.updatedAt) || 0;
+    const stateTime = Number(state?.updatedAt) || 0;
+    // Recover a missing or older chat copy after a refresh or an interrupted save.
+    const restoreBackup = hasBackup && (!state || backupTime > stateTime);
+    if (restoreBackup || (!state && create)) {
+        state = restoreBackup
+            ? { assignments: normalizeAssignments(backup.assignments), updatedAt: backupTime }
+            : { assignments: [] };
+        metadata[CHAT_META_KEY] = state;
+        if (typeof context.updateChatMetadata === 'function') context.updateChatMetadata({ [CHAT_META_KEY]: state }, false);
+        else if (typeof updateChatMetadata === 'function') updateChatMetadata({ [CHAT_META_KEY]: state }, false);
+        context = getContext();
+        metadata = context.chatMetadata ?? chat_metadata;
+        state = metadata?.[CHAT_META_KEY] ?? state;
+        if (restoreBackup) {
+            const persist = context.saveMetadata || context.saveMetadataDebounced || saveMetadata;
+            try {
+                const result = persist.call(context);
+                result?.catch?.(error => console.warn('[Character Chemistry] Chat restore save failed:', error));
+            } catch (error) {
+                console.warn('[Character Chemistry] Chat restore save failed:', error);
+            }
+        }
+    }
     if (!state) return null;
     state.assignments = cachedNormalizeAssignments(state.assignments);
+    // Existing 2.3.x chat metadata must also survive future interrupted saves.
+    if (!hasBackup || (Number(state.updatedAt) || 0) > backupTime) {
+        state.updatedAt = Number(state.updatedAt) || Date.now();
+        settings.chatStates[key] = { assignments: clone(state.assignments), updatedAt: state.updatedAt };
+        commitSettings();
+    }
     return state;
 }
 
 function saveChatState() {
     const context = getContext();
-    if (typeof context.saveMetadata === 'function') context.saveMetadata();
-    else if (typeof context.saveMetadataDebounced === 'function') context.saveMetadataDebounced();
-    else if (typeof saveMetadata === 'function') saveMetadata();
-    else console.warn('[Character Chemistry] SillyTavern did not expose saveMetadata');
+    const key = chatStorageKey(context);
+    const state = (context.chatMetadata ?? chat_metadata)?.[CHAT_META_KEY];
+    if (!key || !state) return;
+    state.assignments = cachedNormalizeAssignments(state.assignments);
+    // Write a synchronous backup before initiating the asynchronous chat save.
+    state.updatedAt = Math.max(Date.now(), (Number(state.updatedAt) || 0) + 1);
+    settings.chatStates[key] = { assignments: clone(state.assignments), updatedAt: state.updatedAt };
+    commitSettings();
+    const persist = context.saveMetadata || context.saveMetadataDebounced || saveMetadata;
+    try {
+        const result = persist.call(context);
+        result?.catch?.(error => console.warn('[Character Chemistry] Chat save failed:', error));
+    } catch (error) {
+        console.warn('[Character Chemistry] Chat save failed:', error);
+    }
 }
 
 function currentChatName() {
@@ -397,11 +450,10 @@ function applyForGeneration() {
 }
 
 function activeAssignmentCount() {
-    if (!settings.enabled) return 0;
-    return (getChatState(false)?.assignments || []).filter(item => {
-        const character = findCharacter(item.characterId);
-        return item.enabled && MODES.includes(item.mode) && character && promptCount(character, item.mode) > 0;
-    }).length;
+    // Badge counts enabled character presets, including modes with no prompts.
+    return (getChatState(true)?.assignments || []).filter(item =>
+        item.enabled && MODES.includes(item.mode) && !!findCharacter(item.characterId)
+    ).length;
 }
 
 function currentFloatingSettings() {
