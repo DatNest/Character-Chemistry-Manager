@@ -93,7 +93,7 @@ function clampNumber(value, min, max, fallback) {
 }
 
 function floatingDeviceKey() {
-    return globalThis.matchMedia?.('(max-width: 600px)')?.matches ? 'mobile' : 'desktop';
+    return globalThis.matchMedia?.('(max-width: 600px), (pointer: coarse) and (max-width: 900px)')?.matches ? 'mobile' : 'desktop';
 }
 
 function normalizeFloatingPosition(value) {
@@ -434,14 +434,10 @@ function floatingBounds(button) {
 function applyFloatingButtonPosition() {
     const button = document.getElementById('ccm-mini');
     if (!button) return;
-    const position = currentFloatingSettings().position;
-    if (!position) {
-        button.style.removeProperty('left');
-        button.style.removeProperty('top');
-        button.style.removeProperty('right');
-        button.style.removeProperty('bottom');
-        return;
-    }
+    // Always anchor to the visible viewport: mobile themes and keyboard
+    // resizing can otherwise push the CSS bottom offset off-screen.
+    const position = currentFloatingSettings().position
+        || { x: 1, y: floatingDeviceKey() === 'mobile' ? 0.62 : 0.80 };
     const bounds = floatingBounds(button);
     button.style.left = `${Math.round(bounds.left + bounds.width * position.x)}px`;
     button.style.top = `${Math.round(bounds.top + bounds.height * position.y)}px`;
@@ -531,7 +527,7 @@ function bindFloatingButton() {
         });
     }
 
-    $(globalThis).on('resize.ccm', scheduleFloatingButtonPosition);
+    $(globalThis).on('resize.characterChemistryManager', scheduleFloatingButtonPosition);
     globalThis.visualViewport?.removeEventListener('resize', scheduleFloatingButtonPosition);
     globalThis.visualViewport?.removeEventListener('scroll', scheduleFloatingButtonPosition);
     globalThis.visualViewport?.addEventListener('resize', scheduleFloatingButtonPosition, { passive: true });
@@ -552,7 +548,7 @@ function panelHtml() {
 }
 
 function shellHtml() {
-    return `<button id="ccm-mini" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small></small></button>`;
+    return `<button id="ccm-mini" type="button" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small class="ccm-badge" aria-hidden="true"></small></button>`;
 }
 
 function settingsHtml() {
@@ -703,8 +699,9 @@ function render() {
     const count = activeAssignmentCount();
     const floating = currentFloatingSettings();
     $('#ccm-count').text(count || '');
-    $('#ccm-mini small').text(count || '');
-    $('#ccm-mini').toggleClass('active', count > 0).toggle(floating.visible);
+    $('#ccm-mini .characterChemistryManager-badge').text(count || '');
+    $('#ccm-mini').toggleClass('active', count > 0).toggleClass('ccm-hidden', !floating.visible)
+        .attr('aria-label', count ? `Открыть Character Chemistry · активных персонажей: ${count}` : 'Открыть Character Chemistry');
     $('#ccm-master-enabled').prop('checked', settings.enabled);
     $('#ccm-show-floating').prop('checked', floating.visible);
     const content = document.getElementById('ccm-content');
@@ -712,7 +709,7 @@ function render() {
         if (floating.visible) scheduleFloatingButtonPosition();
         return;
     }
-    $('.ccm-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
+    $('.characterChemistryManager-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
     const html = ui.view === 'presets' ? renderPresetsView() : ui.view === 'constructor' ? renderConstructorView() : renderChatView();
     content.innerHTML = html;
     if (floating.visible) scheduleFloatingButtonPosition();
@@ -920,56 +917,56 @@ async function importSettings(file) {
 }
 
 function bindEvents() {
-    $(document).off('.ccm');
-    $(globalThis).off('.ccm');
-    $('#ccm-master-enabled, #ccm-show-floating, #ccm-import-file').off('.ccm');
+    $(document).off('.characterChemistryManager');
+    $(globalThis).off('.characterChemistryManager');
+    $('#ccm-master-enabled, #ccm-show-floating, #ccm-import-file').off('.characterChemistryManager');
     bindFloatingButton();
-    $(document).on('click.ccm', '[data-view]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-view]', function () {
         flushCharacterNameSave();
         ui.view = this.dataset.view;
         ui.editCharacterId = null;
         render();
     });
-    $(document).on('click.ccm', '[data-action="open"]', showPanel);
-    $('#ccm-master-enabled').on('change.ccm', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-extension-settings [data-action="open"]', showPanel);
+    $('#ccm-master-enabled').on('change.characterChemistryManager', function () {
         settings.enabled = this.checked;
         commitSettings();
         clearInjectedPrompt();
         render();
     });
-    $('#ccm-show-floating').on('change.ccm', function () {
+    $('#ccm-show-floating').on('change.characterChemistryManager', function () {
         currentFloatingSettings().visible = this.checked;
         commitSettings();
         render();
     });
-    $(document).on('click.ccm', '[data-action="add-character"]', addCharacter);
-    $(document).on('click.ccm', '[data-action="import-profile"]', () => $('#ccm-profile-import-file').trigger('click'));
-    $(document).on('change.ccm', '#ccm-profile-import-file', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="add-character"]', addCharacter);
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="import-profile"]', () => $('#ccm-profile-import-file').trigger('click'));
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-profile-import-file', function () {
         const file = this.files?.[0];
         importProfile(file);
         this.value = '';
     });
-    $(document).on('click.ccm', '[data-action="export-profile"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="export-profile"]', function () {
         exportProfile(this.dataset.characterId);
     });
-    $(document).on('click.ccm', '[data-action="edit-character"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-character"]', function () {
         ui.view = 'presets';
         ui.editCharacterId = this.dataset.characterId;
         ui.editMode = 'flirt';
         ui.promptOffset = PROMPTS_FIRST;
         render();
     });
-    $(document).on('click.ccm', '[data-action="back-presets"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="back-presets"]', function () {
         ui.editCharacterId = null;
         render();
     });
-    $(document).on('input.ccm', '#ccm-character-name', function () {
+    $(document).on('input.characterChemistryManager', '#ccm-panel #ccm-character-name', function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         character.name = this.value.slice(0, 120);
         scheduleCharacterNameSave();
     });
-    $(document).on('change.ccm', '#ccm-character-name', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-character-name', function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         character.name = this.value.trim() || 'Без имени';
@@ -978,7 +975,7 @@ function bindEvents() {
         commitSettings();
         render();
     });
-    $(document).on('click.ccm', '[data-action="delete-character"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="delete-character"]', async function () {
         const character = findCharacter(this.dataset.characterId);
         if (!character) return;
         const confirmed = await Popup.show.confirm(
@@ -993,22 +990,22 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="edit-mode"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-mode"]', function () {
         ui.editMode = this.dataset.mode;
         ui.promptOffset = PROMPTS_FIRST;
         render();
     });
-    $(document).on('click.ccm', '[data-action="load-more-prompts"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="load-more-prompts"]', function () {
         if (this.dataset.scope === 'constructor') ui.constructorOffset += PROMPTS_MORE;
         else ui.promptOffset += PROMPTS_MORE;
         render();
     });
-    $(document).on('click.ccm', '[data-action="add-prompt"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="add-prompt"]', async function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         await createPrompt(character.modes[ui.editMode], { label: 'Новый промпт', text: '', chance: 70, strength: 5 });
     });
-    $(document).on('click.ccm', '[data-action="attach"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="attach"]', function () {
         const characterId = String($('#ccm-attach-select').val() || '');
         const chatState = getChatState();
         if (!chatState || !findCharacter(characterId)) return;
@@ -1019,7 +1016,7 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="detach"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="detach"]', function () {
         const chatState = getChatState(false);
         if (!chatState) return;
         chatState.assignments = chatState.assignments.filter(item => item.characterId !== this.dataset.characterId);
@@ -1027,7 +1024,7 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('change.ccm', '[data-action="toggle-character"]', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel [data-action="toggle-character"]', function () {
         const chatState = getChatState(false);
         const assignment = chatState?.assignments.find(item => item.characterId === this.dataset.characterId);
         if (!assignment) return;
@@ -1036,7 +1033,7 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="set-mode"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="set-mode"]', function () {
         const chatState = getChatState(false);
         const assignment = chatState?.assignments.find(item => item.characterId === this.dataset.characterId);
         if (!assignment) return;
@@ -1045,23 +1042,23 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('change.ccm', '#ccm-constructor-enabled', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-constructor-enabled', function () {
         settings.constructor.enabled = this.checked;
         commitSettings();
         clearInjectedPrompt();
     });
-    $(document).on('click.ccm', '[data-action="add-constructor-prompt"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="add-constructor-prompt"]', async function () {
         await createPrompt(settings.constructor.prompts, { label: 'Новый общий промпт', text: '', chance: 70, strength: 5 });
     });
-    $(document).on('change.ccm', '#ccm-starter-select', async function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-starter-select', async function () {
         const id = String(this.value || '');
         this.value = '';
         const starter = STARTER_PROMPTS.find(item => item.id === id);
         if (!starter) return;
         await createPrompt(settings.constructor.prompts, { label: starter.label, text: starter.text, chance: 70, strength: 6 });
     });
-    $(document).on('change.ccm', '.ccm-prompt-row [data-field="enabled"]', function () {
-        const card = this.closest('.ccm-prompt-row');
+    $(document).on('change.characterChemistryManager', '#ccm-panel .characterChemistryManager-prompt-row [data-field="enabled"]', function () {
+        const card = this.closest('.characterChemistryManager-prompt-row');
         const prompt = findPromptFromCard(card);
         if (!prompt) return;
         prompt.enabled = this.checked;
@@ -1069,13 +1066,13 @@ function bindEvents() {
         commitSettings();
         clearInjectedPrompt();
     });
-    $(document).on('click.ccm', '[data-action="edit-prompt"]', async function () {
-        const card = this.closest('.ccm-prompt-row');
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-prompt"]', async function () {
+        const card = this.closest('.characterChemistryManager-prompt-row');
         const prompt = findPromptFromCard(card);
         if (prompt) await openPromptEditor(prompt);
     });
-    $(document).on('click.ccm', '[data-action="delete-prompt"]', function () {
-        const card = this.closest('.ccm-prompt-row');
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="delete-prompt"]', function () {
+        const card = this.closest('.characterChemistryManager-prompt-row');
         const list = promptListFromCard(card);
         if (!list) return;
         const index = list.findIndex(prompt => prompt.id === card.dataset.promptId);
@@ -1084,9 +1081,9 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="export"]', exportSettings);
-    $(document).on('click.ccm', '[data-action="import"]', () => $('#ccm-import-file').trigger('click'));
-    $('#ccm-import-file').on('change.ccm', function () { importSettings(this.files?.[0]); });
+    $(document).on('click.characterChemistryManager', '#ccm-extension-settings [data-action="export"]', exportSettings);
+    $(document).on('click.characterChemistryManager', '#ccm-extension-settings [data-action="import"]', () => $('#ccm-import-file').trigger('click'));
+    $('#ccm-import-file').on('change.characterChemistryManager', function () { importSettings(this.files?.[0]); });
 }
 
 jQuery(async () => {
