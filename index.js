@@ -751,7 +751,7 @@ function render() {
     const count = activeAssignmentCount();
     const floating = currentFloatingSettings();
     $('#ccm-count').text(count || '');
-    $('#ccm-mini .characterChemistryManager-badge').text(count || '');
+    $('#ccm-mini .ccm-badge').text(count || '');
     $('#ccm-mini').toggleClass('active', count > 0).toggleClass('ccm-hidden', !floating.visible)
         .attr('aria-label', count ? `Открыть Character Chemistry · активных персонажей: ${count}` : 'Открыть Character Chemistry');
     $('#ccm-master-enabled').prop('checked', settings.enabled);
@@ -761,7 +761,7 @@ function render() {
         if (floating.visible) scheduleFloatingButtonPosition();
         return;
     }
-    $('.characterChemistryManager-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
+    $('.ccm-nav [data-view]').removeClass('active').filter(`[data-view="${ui.view}"]`).addClass('active');
     const html = ui.view === 'presets' ? renderPresetsView() : ui.view === 'constructor' ? renderConstructorView() : renderChatView();
     content.innerHTML = html;
     if (floating.visible) scheduleFloatingButtonPosition();
@@ -1109,8 +1109,8 @@ function bindEvents() {
         if (!starter) return;
         await createPrompt(settings.constructor.prompts, { label: starter.label, text: starter.text, chance: 70, strength: 6 });
     });
-    $(document).on('change.characterChemistryManager', '#ccm-panel .characterChemistryManager-prompt-row [data-field="enabled"]', function () {
-        const card = this.closest('.characterChemistryManager-prompt-row');
+    $(document).on('change.characterChemistryManager', '#ccm-panel .ccm-prompt-row [data-field="enabled"]', function () {
+        const card = this.closest('.ccm-prompt-row');
         const prompt = findPromptFromCard(card);
         if (!prompt) return;
         prompt.enabled = this.checked;
@@ -1119,12 +1119,12 @@ function bindEvents() {
         clearInjectedPrompt();
     });
     $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-prompt"]', async function () {
-        const card = this.closest('.characterChemistryManager-prompt-row');
+        const card = this.closest('.ccm-prompt-row');
         const prompt = findPromptFromCard(card);
         if (prompt) await openPromptEditor(prompt);
     });
     $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="delete-prompt"]', function () {
-        const card = this.closest('.characterChemistryManager-prompt-row');
+        const card = this.closest('.ccm-prompt-row');
         const list = promptListFromCard(card);
         if (!list) return;
         const index = list.findIndex(prompt => prompt.id === card.dataset.promptId);
