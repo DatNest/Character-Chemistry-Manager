@@ -276,28 +276,56 @@
     text-align: center;
 }
 
-.ccm-mini {
-    position: fixed;
-    z-index: 100000;
+/* Elevated above the chat, below modal dialogs; fixed even under mobile theme rules. */
+#ccm-mini.ccm-mini {
+    position: fixed !important;
+    z-index: 10000;
     right: calc(18px + env(safe-area-inset-right, 0px));
     bottom: calc(var(--bottomFormBlockSize, 64px) + 16px + env(safe-area-inset-bottom, 0px));
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
     margin: 0;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
     cursor: grab;
 }
 
-.ccm-mini:active {
+#ccm-mini.ccm-mini:not(.ccm-hidden) {
+    display: flex !important;
+}
+
+#ccm-mini.ccm-hidden {
+    display: none !important;
+}
+
+#ccm-mini.ccm-mini:active {
     cursor: grabbing;
 }
 
-.ccm-mini > small {
+/* Small, legible theme-aware flag for the number of enabled chat presets. */
+#ccm-mini .ccm-badge {
     position: absolute;
-    top: -5px;
-    right: -5px;
+    top: -7px;
+    right: -7px;
+    display: grid;
+    place-items: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 4px;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    background: var(--SmartThemeBodyColor, currentColor);
+    color: var(--SmartThemeBlurTintColor, Canvas);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
 }
 
 .ccm-settings-body {
@@ -348,7 +376,7 @@
         align-items: flex-start;
     }
 
-    .ccm-mini {
+    #ccm-mini.ccm-mini {
         right: calc(12px + env(safe-area-inset-right, 0px));
         bottom: calc(var(--bottomFormBlockSize, 64px) + 12px + env(safe-area-inset-bottom, 0px));
     }
