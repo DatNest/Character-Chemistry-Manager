@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
         mobile: { visible: true, position: null },
     },
     characters: [],
+    chatStates: {}, // Per-chat recovery copy; authoritative state lives in chat metadata.
     constructor: { enabled: false, prompts: [] },
     legacyMigrated: false,
 };
@@ -93,7 +94,7 @@ function clampNumber(value, min, max, fallback) {
 }
 
 function floatingDeviceKey() {
-    return globalThis.matchMedia?.('(max-width: 600px)')?.matches ? 'mobile' : 'desktop';
+    return globalThis.matchMedia?.('(max-width: 600px), (pointer: coarse)')?.matches ? 'mobile' : 'desktop';
 }
 
 function normalizeFloatingPosition(value) {
@@ -151,6 +152,8 @@ function normalizeSettings(value) {
             mobile: normalizeFloatingDevice(source.floating?.mobile, true),
         },
         characters: Array.isArray(source.characters) ? source.characters.map(normalizeCharacter) : [],
+        chatStates: source.chatStates && typeof source.chatStates === 'object' && !Array.isArray(source.chatStates)
+            ? clone(source.chatStates) : {},
         constructor: {
             enabled: source.constructor?.enabled === true,
             prompts: Array.isArray(source.constructor?.prompts) ? source.constructor.prompts.map(normalizePrompt) : [],
@@ -238,7 +241,7 @@ function loadSettings() {
     const stored = container[EXTENSION_KEY];
     settings = normalizeSettings(stored || DEFAULT_SETTINGS);
     const migrated = migrateLegacyLocalStorage();
-    const normalizationRequired = !stored || stored.version !== 2 || !stored.floating?.desktop || !stored.floating?.mobile;
+    const normalizationRequired = !stored || stored.version !== 2 || !stored.floating?.desktop || !stored.floating?.mobile || !stored.chatStates;
     container[EXTENSION_KEY] = settings;
     settingsRevision++;
     if (normalizationRequired || migrated) queueSettingsSave();
@@ -275,24 +278,31 @@ function cachedNormalizeAssignments(value) {
     return normalized;
 }
 
-function hasOpenChat(context) {
+function chatStorageKey(context) {
+    // A character index alone is not a chat: wait for a real chat filename.
     const hasValue = value => value !== undefined && value !== null && value !== '' && value !== -1;
     let chatId = context.chatId;
-    try {
-        if (!hasValue(chatId) && typeof context.getCurrentChatId === 'function') chatId = context.getCurrentChatId();
-    } catch {
-        // Older SillyTavern builds may throw while a chat is still loading.
+    if (!hasValue(chatId) && typeof context.getCurrentChatId === 'function') {
+        try { chatId = context.getCurrentChatId(); } catch { return null; }
     }
-    return hasValue(chatId)
-        || hasValue(context.groupId)
-        || hasValue(context.characterId)
-        || (Array.isArray(context.chat) && context.chat.length > 0);
+    if (!hasValue(chatId)) return null;
+    if (hasValue(context.groupId)) return 'group:' + context.groupId + ':' + chatId;
+    const character = context.characters?.[context.characterId];
+    const owner = character?.avatar || (hasValue(context.characterId) ? 'index-' + context.characterId : null);
+    return owner ? 'character:' + owner + ':' + chatId : null;
+}
+
+function hasOpenChat(context) {
+    return !!chatStorageKey(context);
 }
 
 function getChatState(create = true) {
     let context = getContext();
-    if (!hasOpenChat(context)) return null;
+    const key = chatStorageKey(context);
+    if (!key) return null;
     let metadata = context.chatMetadata ?? chat_metadata;
+    const backup = settings?.chatStates?.[key];
+    const hasBackup = Array.isArray(backup?.assignments);
     if (!metadata && create) {
         const initial = { [CHAT_META_KEY]: { assignments: [] } };
         if (typeof context.updateChatMetadata === 'function') context.updateChatMetadata(initial, false);
@@ -300,20 +310,63 @@ function getChatState(create = true) {
         context = getContext();
         metadata = context.chatMetadata ?? chat_metadata;
     }
-    if (!metadata) return null;
-    if (!metadata[CHAT_META_KEY] && create) metadata[CHAT_META_KEY] = { assignments: [] };
-    const state = metadata[CHAT_META_KEY];
+    if (!metadata) {
+        return hasBackup ? { assignments: normalizeAssignments(backup.assignments), updatedAt: backup.updatedAt } : null;
+    }
+
+    let state = metadata[CHAT_META_KEY];
+    const backupTime = Number(backup?.updatedAt) || 0;
+    const stateTime = Number(state?.updatedAt) || 0;
+    // Recover a missing or older chat copy after a refresh or an interrupted save.
+    const restoreBackup = hasBackup && (!state || backupTime > stateTime);
+    if (restoreBackup || (!state && create)) {
+        state = restoreBackup
+            ? { assignments: normalizeAssignments(backup.assignments), updatedAt: backupTime }
+            : { assignments: [] };
+        metadata[CHAT_META_KEY] = state;
+        if (typeof context.updateChatMetadata === 'function') context.updateChatMetadata({ [CHAT_META_KEY]: state }, false);
+        else if (typeof updateChatMetadata === 'function') updateChatMetadata({ [CHAT_META_KEY]: state }, false);
+        context = getContext();
+        metadata = context.chatMetadata ?? chat_metadata;
+        state = metadata?.[CHAT_META_KEY] ?? state;
+        if (restoreBackup) {
+            const persist = context.saveMetadata || context.saveMetadataDebounced || saveMetadata;
+            try {
+                const result = persist.call(context);
+                result?.catch?.(error => console.warn('[Character Chemistry] Chat restore save failed:', error));
+            } catch (error) {
+                console.warn('[Character Chemistry] Chat restore save failed:', error);
+            }
+        }
+    }
     if (!state) return null;
     state.assignments = cachedNormalizeAssignments(state.assignments);
+    // Existing 2.3.x chat metadata must also survive future interrupted saves.
+    if ((!hasBackup || (Number(state.updatedAt) || 0) > backupTime) && (state.assignments.length || hasBackup)) {
+        state.updatedAt = Number(state.updatedAt) || Date.now();
+        settings.chatStates[key] = { assignments: clone(state.assignments), updatedAt: state.updatedAt };
+        commitSettings();
+    }
     return state;
 }
 
 function saveChatState() {
     const context = getContext();
-    if (typeof context.saveMetadata === 'function') context.saveMetadata();
-    else if (typeof context.saveMetadataDebounced === 'function') context.saveMetadataDebounced();
-    else if (typeof saveMetadata === 'function') saveMetadata();
-    else console.warn('[Character Chemistry] SillyTavern did not expose saveMetadata');
+    const key = chatStorageKey(context);
+    const state = (context.chatMetadata ?? chat_metadata)?.[CHAT_META_KEY];
+    if (!key || !state) return;
+    state.assignments = cachedNormalizeAssignments(state.assignments);
+    // Write a synchronous backup before initiating the asynchronous chat save.
+    state.updatedAt = Math.max(Date.now(), (Number(state.updatedAt) || 0) + 1);
+    settings.chatStates[key] = { assignments: clone(state.assignments), updatedAt: state.updatedAt };
+    commitSettings();
+    const persist = context.saveMetadata || context.saveMetadataDebounced || saveMetadata;
+    try {
+        const result = persist.call(context);
+        result?.catch?.(error => console.warn('[Character Chemistry] Chat save failed:', error));
+    } catch (error) {
+        console.warn('[Character Chemistry] Chat save failed:', error);
+    }
 }
 
 function currentChatName() {
@@ -397,11 +450,10 @@ function applyForGeneration() {
 }
 
 function activeAssignmentCount() {
-    if (!settings.enabled) return 0;
-    return (getChatState(false)?.assignments || []).filter(item => {
-        const character = findCharacter(item.characterId);
-        return item.enabled && MODES.includes(item.mode) && character && promptCount(character, item.mode) > 0;
-    }).length;
+    // Badge counts enabled character presets, including modes with no prompts.
+    return (getChatState(true)?.assignments || []).filter(item =>
+        item.enabled && MODES.includes(item.mode) && !!findCharacter(item.characterId)
+    ).length;
 }
 
 function currentFloatingSettings() {
@@ -434,14 +486,10 @@ function floatingBounds(button) {
 function applyFloatingButtonPosition() {
     const button = document.getElementById('ccm-mini');
     if (!button) return;
-    const position = currentFloatingSettings().position;
-    if (!position) {
-        button.style.removeProperty('left');
-        button.style.removeProperty('top');
-        button.style.removeProperty('right');
-        button.style.removeProperty('bottom');
-        return;
-    }
+    // Always anchor to the visible viewport: mobile themes and keyboard
+    // resizing can otherwise push the CSS bottom offset off-screen.
+    const position = currentFloatingSettings().position
+        || { x: 1, y: floatingDeviceKey() === 'mobile' ? 0.62 : 0.80 };
     const bounds = floatingBounds(button);
     button.style.left = `${Math.round(bounds.left + bounds.width * position.x)}px`;
     button.style.top = `${Math.round(bounds.top + bounds.height * position.y)}px`;
@@ -531,7 +579,7 @@ function bindFloatingButton() {
         });
     }
 
-    $(globalThis).on('resize.ccm', scheduleFloatingButtonPosition);
+    $(globalThis).on('resize.characterChemistryManager', scheduleFloatingButtonPosition);
     globalThis.visualViewport?.removeEventListener('resize', scheduleFloatingButtonPosition);
     globalThis.visualViewport?.removeEventListener('scroll', scheduleFloatingButtonPosition);
     globalThis.visualViewport?.addEventListener('resize', scheduleFloatingButtonPosition, { passive: true });
@@ -552,7 +600,7 @@ function panelHtml() {
 }
 
 function shellHtml() {
-    return `<button id="ccm-mini" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small></small></button>`;
+    return `<button id="ccm-mini" type="button" class="menu_button ccm-mini" aria-label="Открыть Character Chemistry" title="Character Chemistry"><i class="fa-solid fa-fire-flame-curved"></i><small class="ccm-badge" aria-hidden="true"></small></button>`;
 }
 
 function settingsHtml() {
@@ -703,8 +751,9 @@ function render() {
     const count = activeAssignmentCount();
     const floating = currentFloatingSettings();
     $('#ccm-count').text(count || '');
-    $('#ccm-mini small').text(count || '');
-    $('#ccm-mini').toggleClass('active', count > 0).toggle(floating.visible);
+    $('#ccm-mini .ccm-badge').text(count || '');
+    $('#ccm-mini').toggleClass('active', count > 0).toggleClass('ccm-hidden', !floating.visible)
+        .attr('aria-label', count ? `Открыть Character Chemistry · активных персонажей: ${count}` : 'Открыть Character Chemistry');
     $('#ccm-master-enabled').prop('checked', settings.enabled);
     $('#ccm-show-floating').prop('checked', floating.visible);
     const content = document.getElementById('ccm-content');
@@ -824,7 +873,10 @@ function addCharacter() {
 }
 
 function exportSettings() {
-    const envelope = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), settings: clone(settings) };
+    const portable = clone(settings);
+    // Chat bindings belong to the original chat files, not a library export.
+    delete portable.chatStates;
+    const envelope = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), settings: portable };
     downloadJson(envelope, `character-chemistry-${new Date().toISOString().slice(0, 10)}.json`);
     notify('Резервная копия сохранена');
 }
@@ -904,7 +956,10 @@ async function importSettings(file) {
     try {
         const envelope = JSON.parse(await file.text());
         if (envelope?.format !== EXPORT_FORMAT || envelope?.version !== 1 || !envelope.settings) throw new Error('Это не файл Character Chemistry версии 1');
+        const chatStates = settings.chatStates;
         settings = normalizeSettings(envelope.settings);
+        // Importing a character library must never erase current chats' bindings.
+        settings.chatStates = chatStates;
         settings.legacyMigrated = true;
         ui = { view: 'chat', editCharacterId: null, editMode: 'flirt', promptOffset: PROMPTS_FIRST, constructorOffset: PROMPTS_FIRST };
         commitSettings();
@@ -920,56 +975,56 @@ async function importSettings(file) {
 }
 
 function bindEvents() {
-    $(document).off('.ccm');
-    $(globalThis).off('.ccm');
-    $('#ccm-master-enabled, #ccm-show-floating, #ccm-import-file').off('.ccm');
+    $(document).off('.characterChemistryManager');
+    $(globalThis).off('.characterChemistryManager');
+    $('#ccm-master-enabled, #ccm-show-floating, #ccm-import-file').off('.characterChemistryManager');
     bindFloatingButton();
-    $(document).on('click.ccm', '[data-view]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-view]', function () {
         flushCharacterNameSave();
         ui.view = this.dataset.view;
         ui.editCharacterId = null;
         render();
     });
-    $(document).on('click.ccm', '[data-action="open"]', showPanel);
-    $('#ccm-master-enabled').on('change.ccm', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-extension-settings [data-action="open"]', showPanel);
+    $('#ccm-master-enabled').on('change.characterChemistryManager', function () {
         settings.enabled = this.checked;
         commitSettings();
         clearInjectedPrompt();
         render();
     });
-    $('#ccm-show-floating').on('change.ccm', function () {
+    $('#ccm-show-floating').on('change.characterChemistryManager', function () {
         currentFloatingSettings().visible = this.checked;
         commitSettings();
         render();
     });
-    $(document).on('click.ccm', '[data-action="add-character"]', addCharacter);
-    $(document).on('click.ccm', '[data-action="import-profile"]', () => $('#ccm-profile-import-file').trigger('click'));
-    $(document).on('change.ccm', '#ccm-profile-import-file', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="add-character"]', addCharacter);
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="import-profile"]', () => $('#ccm-profile-import-file').trigger('click'));
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-profile-import-file', function () {
         const file = this.files?.[0];
         importProfile(file);
         this.value = '';
     });
-    $(document).on('click.ccm', '[data-action="export-profile"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="export-profile"]', function () {
         exportProfile(this.dataset.characterId);
     });
-    $(document).on('click.ccm', '[data-action="edit-character"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-character"]', function () {
         ui.view = 'presets';
         ui.editCharacterId = this.dataset.characterId;
         ui.editMode = 'flirt';
         ui.promptOffset = PROMPTS_FIRST;
         render();
     });
-    $(document).on('click.ccm', '[data-action="back-presets"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="back-presets"]', function () {
         ui.editCharacterId = null;
         render();
     });
-    $(document).on('input.ccm', '#ccm-character-name', function () {
+    $(document).on('input.characterChemistryManager', '#ccm-panel #ccm-character-name', function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         character.name = this.value.slice(0, 120);
         scheduleCharacterNameSave();
     });
-    $(document).on('change.ccm', '#ccm-character-name', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-character-name', function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         character.name = this.value.trim() || 'Без имени';
@@ -978,7 +1033,7 @@ function bindEvents() {
         commitSettings();
         render();
     });
-    $(document).on('click.ccm', '[data-action="delete-character"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="delete-character"]', async function () {
         const character = findCharacter(this.dataset.characterId);
         if (!character) return;
         const confirmed = await Popup.show.confirm(
@@ -993,22 +1048,22 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="edit-mode"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-mode"]', function () {
         ui.editMode = this.dataset.mode;
         ui.promptOffset = PROMPTS_FIRST;
         render();
     });
-    $(document).on('click.ccm', '[data-action="load-more-prompts"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="load-more-prompts"]', function () {
         if (this.dataset.scope === 'constructor') ui.constructorOffset += PROMPTS_MORE;
         else ui.promptOffset += PROMPTS_MORE;
         render();
     });
-    $(document).on('click.ccm', '[data-action="add-prompt"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="add-prompt"]', async function () {
         const character = findCharacter(ui.editCharacterId);
         if (!character) return;
         await createPrompt(character.modes[ui.editMode], { label: 'Новый промпт', text: '', chance: 70, strength: 5 });
     });
-    $(document).on('click.ccm', '[data-action="attach"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="attach"]', function () {
         const characterId = String($('#ccm-attach-select').val() || '');
         const chatState = getChatState();
         if (!chatState || !findCharacter(characterId)) return;
@@ -1019,7 +1074,7 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="detach"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="detach"]', function () {
         const chatState = getChatState(false);
         if (!chatState) return;
         chatState.assignments = chatState.assignments.filter(item => item.characterId !== this.dataset.characterId);
@@ -1027,7 +1082,7 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('change.ccm', '[data-action="toggle-character"]', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel [data-action="toggle-character"]', function () {
         const chatState = getChatState(false);
         const assignment = chatState?.assignments.find(item => item.characterId === this.dataset.characterId);
         if (!assignment) return;
@@ -1036,7 +1091,7 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="set-mode"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="set-mode"]', function () {
         const chatState = getChatState(false);
         const assignment = chatState?.assignments.find(item => item.characterId === this.dataset.characterId);
         if (!assignment) return;
@@ -1045,22 +1100,22 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('change.ccm', '#ccm-constructor-enabled', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-constructor-enabled', function () {
         settings.constructor.enabled = this.checked;
         commitSettings();
         clearInjectedPrompt();
     });
-    $(document).on('click.ccm', '[data-action="add-constructor-prompt"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="add-constructor-prompt"]', async function () {
         await createPrompt(settings.constructor.prompts, { label: 'Новый общий промпт', text: '', chance: 70, strength: 5 });
     });
-    $(document).on('change.ccm', '#ccm-starter-select', async function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel #ccm-starter-select', async function () {
         const id = String(this.value || '');
         this.value = '';
         const starter = STARTER_PROMPTS.find(item => item.id === id);
         if (!starter) return;
         await createPrompt(settings.constructor.prompts, { label: starter.label, text: starter.text, chance: 70, strength: 6 });
     });
-    $(document).on('change.ccm', '.ccm-prompt-row [data-field="enabled"]', function () {
+    $(document).on('change.characterChemistryManager', '#ccm-panel .ccm-prompt-row [data-field="enabled"]', function () {
         const card = this.closest('.ccm-prompt-row');
         const prompt = findPromptFromCard(card);
         if (!prompt) return;
@@ -1069,12 +1124,12 @@ function bindEvents() {
         commitSettings();
         clearInjectedPrompt();
     });
-    $(document).on('click.ccm', '[data-action="edit-prompt"]', async function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="edit-prompt"]', async function () {
         const card = this.closest('.ccm-prompt-row');
         const prompt = findPromptFromCard(card);
         if (prompt) await openPromptEditor(prompt);
     });
-    $(document).on('click.ccm', '[data-action="delete-prompt"]', function () {
+    $(document).on('click.characterChemistryManager', '#ccm-panel [data-action="delete-prompt"]', function () {
         const card = this.closest('.ccm-prompt-row');
         const list = promptListFromCard(card);
         if (!list) return;
@@ -1084,9 +1139,9 @@ function bindEvents() {
         clearInjectedPrompt();
         render();
     });
-    $(document).on('click.ccm', '[data-action="export"]', exportSettings);
-    $(document).on('click.ccm', '[data-action="import"]', () => $('#ccm-import-file').trigger('click'));
-    $('#ccm-import-file').on('change.ccm', function () { importSettings(this.files?.[0]); });
+    $(document).on('click.characterChemistryManager', '#ccm-extension-settings [data-action="export"]', exportSettings);
+    $(document).on('click.characterChemistryManager', '#ccm-extension-settings [data-action="import"]', () => $('#ccm-import-file').trigger('click'));
+    $('#ccm-import-file').on('change.characterChemistryManager', function () { importSettings(this.files?.[0]); });
 }
 
 jQuery(async () => {

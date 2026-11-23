@@ -135,8 +135,10 @@ context.mockContext.chatMetadata.character_chemistry_manager.assignments[0].enab
 
 const primaryMetadata = context.mockContext.chatMetadata;
 context.chat_metadata = { character_chemistry_manager: { assignments: [{ characterId: 'alex', enabled: true, mode: 'spicy' }] } };
+context.mockContext.chatId = 'legacy-chat';
 context.mockContext.chatMetadata = null;
 assert.equal(vm.runInContext('getChatState(false).assignments[0].mode', context), 'spicy');
+context.mockContext.chatId = 'test-chat';
 context.mockContext.chatMetadata = primaryMetadata;
 
 const openChatContext = context.mockContext;
@@ -145,8 +147,33 @@ assert.equal(vm.runInContext('getChatState()', context), null);
 context.mockContext = openChatContext;
 
 context.chat_metadata = null;
+context.mockContext.chatId = 'fresh-chat';
 context.mockContext.chatMetadata = null;
-assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('getChatState()', context))), { assignments: [] });
+assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('getChatState().assignments', context))), []);
+context.mockContext.chatId = 'test-chat';
+context.mockContext.chatMetadata = primaryMetadata;
+
+// Save distinct enabled profiles for two different chats; recover even if chat
+// metadata is absent after reload, and do not count only populated prompt modes.
+context.mockContext.chatId = 'recovery-A';
+context.mockContext.chatMetadata = {};
+vm.runInContext('getChatState(true).assignments.push({characterId:"alex", enabled:true, mode:"sex"}); saveChatState()', context);
+assert.equal(vm.runInContext('activeAssignmentCount()', context), 1, 'Badge counts enabled profiles even without prompts');
+assert.equal(vm.runInContext('settings.chatStates["character:index-0:recovery-A"].assignments[0].mode', context), 'sex');
+
+context.mockContext.chatId = 'recovery-B';
+context.mockContext.chatMetadata = {};
+assert.equal(vm.runInContext('getChatState(true).assignments.length', context), 0, 'New chat must not inherit another chat');
+vm.runInContext('getChatState(true).assignments.push({characterId:"mia", enabled:true, mode:"spicy"}); saveChatState()', context);
+
+context.mockContext.chatId = 'recovery-A';
+context.mockContext.chatMetadata = {};
+assert.equal(vm.runInContext('getChatState(true).assignments[0].mode', context), 'sex', 'Chat A should restore its preset after reload');
+context.mockContext.chatId = 'recovery-B';
+context.mockContext.chatMetadata = {};
+assert.equal(vm.runInContext('getChatState(true).assignments[0].characterId', context), 'mia', 'Chat B should restore independently');
+
+context.mockContext.chatId = 'test-chat';
 context.mockContext.chatMetadata = primaryMetadata;
 
 const chatHtml = vm.runInContext('renderChatView()', context);
@@ -159,7 +186,7 @@ assert.equal(vm.runInContext(`uniqueImportedName('Alex')`, context), 'Alex (им
 assert.equal(vm.runInContext(`safeFilePart('A/B:*?')`, context), 'A-B-');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
-assert.equal(manifest.version, '2.3.2');
+assert.equal(manifest.version, '2.3.3');
 assert.equal(manifest.auto_update, false);
 
 assert.match(source, /character-chemistry-profile/);
@@ -179,6 +206,11 @@ assert.doesNotMatch(source, /data-action="close"/);
 assert.match(source, /data-action="toggle-character"/);
 assert.match(source, /function injectionStatusHtml\(/);
 assert.match(source, /function bindFloatingButton\(/);
+assert.match(source, /function chatStorageKey\(/);
+assert.match(source, /function saveChatState\(/);
+assert.match(source, /restoreBackup/);
+assert.match(source, /\.ccm-badge/);
+assert.doesNotMatch(source, /\$\(document\)\.on\('[^']*', '\[data-/);
 assert.match(source, /function scheduleFloatingButtonPosition\(/);
 assert.match(source, /if \(!content\)/);
 assert.match(source, /PROMPTS_FIRST = 30/);
@@ -192,8 +224,13 @@ assert.match(source, /addEventListener\('pointermove'/);
 assert.doesNotMatch(source, /\$\('#ccm-mini'\)\.on\('click/);
 
 const styleSource = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+assert.match(styleSource, /#ccm-mini\.ccm-mini:not\(\.ccm-hidden\)/);
+assert.match(styleSource, /position:\s*fixed !important/);
+assert.match(styleSource, /#ccm-mini \.ccm-badge/);
+assert.match(styleSource, /var\(--SmartThemeBodyColor/);
+const styleWithoutThemeBadge = styleSource.replace(/#ccm-mini \.ccm-badge\s*\{[^}]*\}/g, '');
 for (const property of ['color', 'background', 'border', 'border-radius', 'box-shadow', 'font', 'font-family', 'font-size', 'opacity', 'filter', 'backdrop-filter']) {
-    assert.doesNotMatch(styleSource, new RegExp(`(^|[;{]\\s*)${property}\\s*:`, 'm'), `style.css must not define ${property}`);
+    assert.doesNotMatch(styleWithoutThemeBadge, new RegExp(`(^|[;{]\\s*)${property}\\s*:`, 'm'), `style.css must not define ${property}`);
 }
 
 console.log('Character Chemistry verification: OK');
