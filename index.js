@@ -873,7 +873,10 @@ function addCharacter() {
 }
 
 function exportSettings() {
-    const envelope = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), settings: clone(settings) };
+    const portable = clone(settings);
+    // Chat bindings belong to the original chat files, not a library export.
+    delete portable.chatStates;
+    const envelope = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), settings: portable };
     downloadJson(envelope, `character-chemistry-${new Date().toISOString().slice(0, 10)}.json`);
     notify('Резервная копия сохранена');
 }
@@ -953,7 +956,10 @@ async function importSettings(file) {
     try {
         const envelope = JSON.parse(await file.text());
         if (envelope?.format !== EXPORT_FORMAT || envelope?.version !== 1 || !envelope.settings) throw new Error('Это не файл Character Chemistry версии 1');
+        const chatStates = settings.chatStates;
         settings = normalizeSettings(envelope.settings);
+        // Importing a character library must never erase current chats' bindings.
+        settings.chatStates = chatStates;
         settings.legacyMigrated = true;
         ui = { view: 'chat', editCharacterId: null, editMode: 'flirt', promptOffset: PROMPTS_FIRST, constructorOffset: PROMPTS_FIRST };
         commitSettings();
